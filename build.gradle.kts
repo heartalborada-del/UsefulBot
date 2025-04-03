@@ -15,6 +15,8 @@ allprojects {
         testImplementation(kotlin("test"))
         testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
         implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.0")
+        implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
+
     }
 }
 

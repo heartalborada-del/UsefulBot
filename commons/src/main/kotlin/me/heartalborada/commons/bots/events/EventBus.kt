@@ -1,4 +1,4 @@
-package me.heartalborada.commons.events
+package me.heartalborada.commons.bots.events
 
 class EventBus {
     private val listeners = mutableMapOf<Class<out Event>, MutableList<(Event) -> Unit>>()

@@ -1,4 +1,4 @@
-package me.heartalborada.commons.events
+package me.heartalborada.commons.bots.events
 
 interface Event {
     val isIntercepted: Boolean

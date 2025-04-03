@@ -1,31 +1,12 @@
 package me.heartalborada.commons.bots
 
 import me.heartalborada.commons.bots.beans.FileInfo
+import java.io.File
+import java.util.*
 
-class MessageChain {
-    private val chain = mutableListOf<AbstractMessageObject>()
-    fun append(obj: AbstractMessageObject): MessageChain {
-        chain.add(obj)
-        return this
-    }
-
-    fun removeLast(): MessageChain {
-        chain.removeAt(chain.size - 1)
-        return this
-    }
-
-    fun removeAt(index: Int): MessageChain {
-        chain.removeAt(index)
-        return this
-    }
-
-    fun clear(): MessageChain {
-        chain.clear()
-        return this
-    }
-
+class MessageChain : MutableList<AbstractMessageObject> by mutableListOf() {
     override fun toString(): String {
-        return chain.joinToString(separator = "") { it.toString() }
+        return joinToString(separator = "") { it.toString() }
     }
 }
 
@@ -51,7 +32,19 @@ class AtAll : AbstractMessageObject() {
     }
 }
 
-class Image(val url: String) : AbstractMessageObject() {
+class Image() : AbstractMessageObject() {
+    private var url: String? = null
+    constructor(url: String) : this() {
+        this.url = url
+    }
+    constructor(file: File) : this() {
+        this.url = "file://${file.toURI()}"
+
+    }
+    constructor(bytes: ByteArray) : this() {
+        this.url = "base64://${Base64.getEncoder().encodeToString(bytes)}"
+    }
+
     override fun toString(): String {
         return "[Image]"
     }
