@@ -1,8 +1,8 @@
 package me.heartalborada.commons.commands
 
-import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.MessageChain
+import me.heartalborada.commons.bots.beans.MessageSender
 
 interface CommandExecutor {
-    fun execute(sender: ChatType, command: String, args: MessageChain)
+    suspend fun execute(sender: MessageSender, command: String, args: MessageChain)
 }

@@ -32,18 +32,9 @@ class AtAll : AbstractMessageObject() {
     }
 }
 
-class Image() : AbstractMessageObject() {
-    private var url: String? = null
-    constructor(url: String) : this() {
-        this.url = url
-    }
-    constructor(file: File) : this() {
-        this.url = "file://${file.toURI()}"
-
-    }
-    constructor(bytes: ByteArray) : this() {
-        this.url = "base64://${Base64.getEncoder().encodeToString(bytes)}"
-    }
+class Image(val url: String) : AbstractMessageObject() {
+    constructor(file: File) : this("file://${file.toURI()}")
+    constructor(bytes: ByteArray) : this("base64://${Base64.getEncoder().encodeToString(bytes)}")
 
     override fun toString(): String {
         return "[Image]"
@@ -74,4 +65,27 @@ class Forward(val id: String) : AbstractMessageObject() {
     }
 }
 
+class Dice(val result: Int) : AbstractMessageObject() {
+    override fun toString(): String {
+        return "[Dice:$result]"
+    }
+}
+
+class Rps(val result: RpsResult) : AbstractMessageObject() {
+    override fun toString(): String {
+        return "[Rps:$result]"
+    }
+}
+
+enum class RpsResult(val value: Int) {
+    PAPER(1),
+    SCISSORS(2),
+    ROCK(3);
+
+    companion object {
+        fun fromValue(value: Int): RpsResult {
+            return entries.first { it.value == value }
+        }
+    }
+}
 //TODO add more message objects

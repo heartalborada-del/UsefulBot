@@ -1,7 +1,12 @@
 package me.heartalborada.commons.bots.events
 
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
+
 class EventBus {
     private val listeners = mutableMapOf<Class<out Event>, MutableList<(Event) -> Unit>>()
+    private val scope = CoroutineScope(CoroutineName("EventBusScope"))
 
     fun <E : Event> register(eventType: Class<E>, listener: (E) -> Unit): () -> Unit {
         val eventListeners = listeners.computeIfAbsent(eventType) { mutableListOf() }
@@ -26,7 +31,9 @@ class EventBus {
 
     fun broadcast(event: Event) {
         listeners[event::class.java]?.forEach { listener ->
-            listener(event)
+            scope.launch {
+                listener(event)
+            }
         }
     }
 }

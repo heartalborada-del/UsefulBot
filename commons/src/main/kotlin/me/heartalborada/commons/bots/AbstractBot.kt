@@ -1,25 +1,33 @@
 package me.heartalborada.commons.bots
 
+import kotlinx.coroutines.*
 import me.heartalborada.commons.bots.events.EventBus
 import me.heartalborada.commons.bots.events.GroupMessageEvent
 import me.heartalborada.commons.commands.CommandExecutor
 import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.beans.FileInfo
+import me.heartalborada.commons.bots.beans.MessageSender
+import java.util.*
 
 abstract class AbstractBot {
-    init {
-        registerCommandEvent()
-    }
+    private val commonScope = CoroutineScope(CoroutineName("BotExecutorScope"))
 
     private val commandMap = mutableMapOf<String, CommandExecutor>()
 
-    abstract fun close(): Boolean
+    open fun close(): Boolean {
+        commonScope.cancel()
+        commandMap.clear()
+        return true
+    }
 
-    abstract fun connect(): Boolean
+    open fun connect(): Boolean {
+        registerCommandEvent(operator = '/', isStartWithAtBot = false)
+        return true
+    }
 
     abstract fun getEventBus(): EventBus
 
-    abstract suspend fun sendMessage(type: ChatType, id: Long, message: MessageChain): Boolean
+    abstract fun sendMessage(type: ChatType, id: Long, message: MessageChain): Boolean
 
     abstract suspend fun recallMessage(messageID: Long): Boolean
 
@@ -56,15 +64,16 @@ abstract class AbstractBot {
             val copy = MessageChain()
             copy.addAll(it.message.toMutableList())
             if (isStartWithAtBot) copy.removeAt(0)
-            commandParser(ChatType.GROUP, copy, operator, divider)
+            commandParser(MessageSender(it.groupID,it.sender,ChatType.GROUP), copy, operator, divider)
         }
     }
 
     // 解析命令并执行对应的命令执行器
-    private fun commandParser(sender: ChatType, messageChain: MessageChain, operator: Char?, divider: Char): Boolean {
+    private fun commandParser(sender: MessageSender, messageChain: MessageChain, operator: Char?, divider: Char): Boolean {
         if (messageChain.size > 0 && messageChain[0] is PlainText) {
             val firstText = (messageChain[0] as PlainText).text.trim()
-            val mainCommand = firstText.split(divider)[0]
+            var mainCommand = firstText.split(divider)[0].lowercase(Locale.getDefault())
+            if (operator != null) mainCommand = mainCommand.removePrefix(operator.toString())
             // 如果命令不以指定的操作符开头，则返回
             if (operator != null && firstText[0] != operator) return false
             // 如果命令为空或不在命令映射中，则返回
@@ -82,7 +91,9 @@ abstract class AbstractBot {
                 }
             }
             // 执行对应的命令执行器
-            commandMap[mainCommand]?.execute(sender, mainCommand, newMsgChain)
+            commonScope.launch {
+                commandMap[mainCommand]?.execute(sender, mainCommand, newMsgChain)
+            }
         }
         return true
     }
