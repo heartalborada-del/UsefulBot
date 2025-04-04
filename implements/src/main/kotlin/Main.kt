@@ -11,7 +11,7 @@ fun main() {
     val bot = Napcat("ws://127.0.0.1:3001","napcat!")
     bot.registerCommand(commands = arrayOf("ping"), executor = object : CommandExecutor {
         override suspend fun execute(sender: MessageSender, command: String, args: MessageChain) {
-            bot.sendMessage(sender.type, sender.group, MessageChain().also {
+            bot.sendMessage(sender.type, sender.target, MessageChain().also {
                 it.add(PlainText("Hello World"))
             })
         }

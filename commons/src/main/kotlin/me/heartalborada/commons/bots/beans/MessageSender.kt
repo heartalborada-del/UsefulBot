@@ -4,7 +4,7 @@ import me.heartalborada.commons.ChatType
 
 
 data class MessageSender(
-    val group: Long,
+    val target: Long,
     val user: UserInfo,
     val type: ChatType,
 )

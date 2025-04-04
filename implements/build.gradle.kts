@@ -2,9 +2,7 @@ group = "me.heartalborada.implements"
 
 dependencies {
     testImplementation(kotlin("test"))
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("commons-io:commons-io:2.18.0")
-    implementation("com.google.code.gson:gson:2.12.1")
-
+    implementation("org.jsoup:jsoup:1.19.1")
     implementation(project(":commons"))
 }

@@ -1,6 +1,5 @@
 package me.heartalborada.commons.comic
 
-import org.apache.commons.io.FileUtils
 import org.apache.pdfbox.io.MemoryUsageSetting
 import org.apache.pdfbox.pdmodel.PDDocument
 import org.apache.pdfbox.pdmodel.PDPage
@@ -10,6 +9,8 @@ import org.apache.pdfbox.pdmodel.font.PDType1Font
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.Path
 
 
 class PDFGenerator {
@@ -18,10 +19,10 @@ class PDFGenerator {
             images: List<File>,
             signatureText: String = "Null",
             pdfFile: File = File("output.pdf"),
-            tempDir: File? = null
+            tempDir: File = File(System.getProperty("java.io.tmpdir"))
         ) {
             val cache = MemoryUsageSetting.setupMixed(Runtime.getRuntime().maxMemory() / 4)
-            if (tempDir != null) cache.tempDir = tempDir
+            cache.tempDir = tempDir
 
             val doc = PDDocument(cache.streamCache)
 

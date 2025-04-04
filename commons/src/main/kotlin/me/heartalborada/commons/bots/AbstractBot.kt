@@ -5,14 +5,21 @@ import me.heartalborada.commons.bots.events.EventBus
 import me.heartalborada.commons.bots.events.GroupMessageEvent
 import me.heartalborada.commons.commands.CommandExecutor
 import me.heartalborada.commons.ChatType
+import me.heartalborada.commons.ActionResponse
 import me.heartalborada.commons.bots.beans.FileInfo
 import me.heartalborada.commons.bots.beans.MessageSender
+import me.heartalborada.commons.bots.events.PrivateMessageEvent
 import java.util.*
 
-abstract class AbstractBot {
+abstract class AbstractBot(
+    private val isCommandStartWithAt: Boolean = true,
+    private val commandOperator: Char = '/',
+    private val commandDivider: Char = ' '
+) {
     private val commonScope = CoroutineScope(CoroutineName("BotExecutorScope"))
 
     private val commandMap = mutableMapOf<String, CommandExecutor>()
+    private var isRegistered: Boolean = false
 
     open fun close(): Boolean {
         commonScope.cancel()
@@ -21,21 +28,22 @@ abstract class AbstractBot {
     }
 
     open fun connect(): Boolean {
-        registerCommandEvent(operator = '/', isStartWithAtBot = false)
+        if (!isRegistered)
+            registerCommandEvent(operator = commandOperator, isStartWithAtBot = isCommandStartWithAt, divider = commandDivider)
         return true
     }
 
     abstract fun getEventBus(): EventBus
 
-    abstract fun sendMessage(type: ChatType, id: Long, message: MessageChain): Boolean
+    abstract fun sendMessage(type: ChatType, id: Long, message: MessageChain): ActionResponse<Long>
 
-    abstract suspend fun recallMessage(messageID: Long): Boolean
+    abstract fun recallMessage(messageID: Long): ActionResponse<Void>
 
-    abstract suspend fun getMessageByID(messageID: Long): MessageChain?
+    abstract fun getMessageByID(messageID: Long): ActionResponse<MessageChain>
 
-    abstract suspend fun getImageUrlByID(imageID: String): String?
+    abstract fun getImageUrlByName(imageName: String): ActionResponse<FileInfo>
 
-    abstract suspend fun getFileByID(fileID: String): FileInfo?
+    abstract fun getFileByID(fileID: String): ActionResponse<FileInfo>
     // 注册命令及其对应的执行器
     fun registerCommand(vararg commands: String, executor: CommandExecutor) {
         for (command in commands) {
@@ -66,8 +74,11 @@ abstract class AbstractBot {
             if (isStartWithAtBot) copy.removeAt(0)
             commandParser(MessageSender(it.groupID,it.sender,ChatType.GROUP), copy, operator, divider)
         }
+        this.getEventBus().register(PrivateMessageEvent::class.java) {
+            commandParser(MessageSender(it.sender.userID,it.sender,ChatType.PRIVATE), it.message, operator, divider)
+        }
+        isRegistered = true
     }
-
     // 解析命令并执行对应的命令执行器
     private fun commandParser(sender: MessageSender, messageChain: MessageChain, operator: Char?, divider: Char): Boolean {
         if (messageChain.size > 0 && messageChain[0] is PlainText) {

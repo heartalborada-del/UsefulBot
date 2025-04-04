@@ -32,10 +32,7 @@ class AtAll : AbstractMessageObject() {
     }
 }
 
-class Image(val url: String) : AbstractMessageObject() {
-    constructor(file: File) : this("file://${file.toURI()}")
-    constructor(bytes: ByteArray) : this("base64://${Base64.getEncoder().encodeToString(bytes)}")
-
+class Image(val info: FileInfo) : AbstractMessageObject() {
     override fun toString(): String {
         return "[Image]"
     }

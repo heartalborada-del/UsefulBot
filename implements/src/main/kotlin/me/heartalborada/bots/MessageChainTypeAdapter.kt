@@ -1,4 +1,4 @@
-package me.heartalborada.bots.napcat
+package me.heartalborada.bots
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -40,7 +40,7 @@ class MessageChainTypeAdapter: TypeAdapter<MessageChain>() {
                     writer.name("type").value("image")
                     writer.name("data")
                     writer.beginObject()
-                    writer.name("url").value(it.url)
+                    writer.name("url").value(it.info.url)
                     writer.endObject()
                 }
                 is File -> {
@@ -100,7 +100,15 @@ class MessageChainTypeAdapter: TypeAdapter<MessageChain>() {
                         chain.add(At(qq.toLong()))
                     }
                 }
-                "image" -> chain.add(Image(data!!.getAsJsonPrimitive("url").asString))
+                "image" -> {
+                    val info = FileInfo(
+                        data!!.getAsJsonPrimitive("file").asString,
+                        data.getAsJsonPrimitive("file_size").asString.toLong(),
+                        data!!.getAsJsonPrimitive("file").asString,
+                        data.getAsJsonPrimitive("url").asString
+                    )
+                    chain.add(Image(info))
+                }
                 "file" -> {
                     val info = FileInfo(
                         data!!.getAsJsonPrimitive("file").asString,

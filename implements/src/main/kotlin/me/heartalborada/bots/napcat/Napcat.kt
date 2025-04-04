@@ -2,20 +2,18 @@ package me.heartalborada.bots.napcat
 
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonNull
-import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import me.heartalborada.bots.MessageChainTypeAdapter
 import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.beans.FileInfo
 import me.heartalborada.commons.bots.beans.UserInfo
 import me.heartalborada.commons.bots.*
+import me.heartalborada.commons.ActionResponse
 import me.heartalborada.commons.bots.beans.ApiCommon
-import me.heartalborada.commons.bots.events.EventBus
-import me.heartalborada.commons.bots.events.HeartBeatEvent
-import me.heartalborada.commons.bots.events.BotOnlineEvent
-import me.heartalborada.commons.bots.events.GroupMessageEvent
+import me.heartalborada.commons.bots.events.*
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.WebSocket
@@ -25,16 +23,21 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration.Companion.milliseconds
-import kotlin.uuid.toKotlinUuid
 
-class Napcat(private var wsURL: String,private var token: String): AbstractBot() {
+class Napcat(
+    private var wsURL: String,
+    private var token: String,
+    private val isCommandStartWithAt: Boolean = true,
+    private val commandOperator: Char = '/',
+    private val commandDivider: Char = ' '
+): AbstractBot(isCommandStartWithAt,commandOperator,commandDivider) {
     private var isConnected = false
     private var eventWS: WebSocket? = null
     private var apiWS: WebSocket? = null
     private var httpClient = OkHttpClient()
     private val eventBus = EventBus()
     private val mutex = Mutex()
-    private val gson = GsonBuilder().registerTypeAdapter(MessageChain::class.java,MessageChainTypeAdapter()).create()
+    private val gson = GsonBuilder().registerTypeAdapter(MessageChain::class.java, MessageChainTypeAdapter()).create()
     private val botContext: CoroutineContext by lazy {
         val dispatcher = Executors.newFixedThreadPool(4).asCoroutineDispatcher()
         val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
@@ -75,7 +78,7 @@ class Napcat(private var wsURL: String,private var token: String): AbstractBot()
         return eventBus
     }
 
-    override fun sendMessage(type: ChatType, id: Long, message: MessageChain): Boolean {
+    override fun sendMessage(type: ChatType, id: Long, message: MessageChain): ActionResponse<Long> {
         return runBlocking {
             withContext(botContext) {
                 mutex.withLock {
@@ -86,51 +89,78 @@ class Napcat(private var wsURL: String,private var token: String): AbstractBot()
                             ChatType.PRIVATE -> "send_private_msg"
                             else -> throw IllegalArgumentException("Invalid chat type")
                         }
-                        val root = mutableMapOf<String,Any>().let {
+                        val data = mutableMapOf<String,Any>().let {
                             when (type) {
                                 ChatType.GROUP -> it["group_id"] = id
                                 ChatType.PRIVATE -> it["user_id"] = id
                                 else -> throw IllegalArgumentException("Invalid chat type")
                             }
-                            it.put("message", gson.toJsonTree(message))
+                            it["message"] = gson.toJsonTree(message)
                             return@let it
                         }
                         val responseDiffered = CompletableDeferred<String>()
                         pendingReqs[uuid] = responseDiffered
-                        val sent = apiWS?.send(gson.toJson(ApiCommon(action,uuid,root))) == true
-                        if (!sent) return@withContext false
+                        val sent = apiWS?.send(gson.toJson(ApiCommon(action,uuid,data))) == true
+                        if (!sent) return@withContext ActionResponse<Long>(false, -1, "Failed to send message", null)
                         val response = withTimeoutOrNull(5000.milliseconds) {
                             responseDiffered.await().also {
                                 pendingReqs.remove(uuid)
                             }
                         }.also { pendingReqs.remove(uuid) }
-                        if (response == null) return@withContext false
-                        println(response)
-                        return@withContext true
+                        if (response == null) return@withContext ActionResponse<Long>(false, -1, "Timeout", null)
+                        val root = JsonParser.parseString(response).asJsonObject
+                        when(val code = root.getAsJsonPrimitive("retcode").asInt) {
+                            0 -> return@withContext ActionResponse<Long>(true, code, "Success", root.getAsJsonObject("data").getAsJsonPrimitive("message_id").asLong)
+                            else -> return@withContext ActionResponse<Long>(false, code, root.getAsJsonPrimitive("message").asString, null)
+                        }
                     } catch (e: Exception) {
                         pendingReqs.remove(uuid)
                         e.printStackTrace()
-                        return@withContext false
+                        return@withContext ActionResponse<Long>(false, -1, e.message, null)
                     }
                 }
             }
         }
     }
 
+    override fun recallMessage(messageID: Long): ActionResponse<Void> {
+        return runBlocking {
+            withContext(botContext) {
+                mutex.withLock {
+                    val uuid = UUID.randomUUID().toString()
+                    val data = mutableMapOf<String,Any>().let {
+                        it["message_id"] = messageID
+                        return@let it
+                    }
+                    val responseDiffered = CompletableDeferred<String>()
+                    pendingReqs[uuid] = responseDiffered
+                    val sent = apiWS?.send(gson.toJson(ApiCommon("delete_msg",uuid,data))) == true
+                    if (!sent) return@withContext ActionResponse<Void>(false, -1, "Failed to send message", null)
+                    val response = withTimeoutOrNull(5000.milliseconds) {
+                        responseDiffered.await().also {
+                            pendingReqs.remove(uuid)
+                        }
+                    }.also { pendingReqs.remove(uuid) }
+                    if (response == null) return@withContext ActionResponse<Void>(false, -1, "Timeout", null)
+                    val root = JsonParser.parseString(response).asJsonObject
+                    when(val code = root.getAsJsonPrimitive("retcode").asInt) {
+                        0 -> return@withContext ActionResponse<Void>(true, code, "Success", null)
+                        else -> return@withContext ActionResponse<Void>(false, code, root.getAsJsonPrimitive("message").asString, null)
+                    }
+                }
+            }
+        }
+    }
 
-    override suspend fun recallMessage(messageID: Long): Boolean {
+    override fun getMessageByID(messageID: Long): ActionResponse<MessageChain> {
         TODO("Not yet implemented")
     }
 
-    override suspend fun getMessageByID(messageID: Long): MessageChain? {
+    override fun getImageUrlByName(imageName: String): ActionResponse<FileInfo> {
         TODO("Not yet implemented")
     }
 
-    override suspend fun getImageUrlByID(imageID: String): String? {
-        TODO("Not yet implemented")
-    }
-
-    override suspend fun getFileByID(fileID: String): FileInfo? {
+    override fun getFileByID(fileID: String): ActionResponse<FileInfo> {
         TODO("Not yet implemented")
     }
 
@@ -160,6 +190,7 @@ class Napcat(private var wsURL: String,private var token: String): AbstractBot()
                     }
                 }
                 "message" -> {
+                    val id = root.getAsJsonPrimitive("message_id").asLong
                     when (root.getAsJsonPrimitive("message_type").asString) {
                         "group" -> {
                             val groupID = root.getAsJsonPrimitive("group_id").asLong
@@ -174,7 +205,22 @@ class Napcat(private var wsURL: String,private var token: String): AbstractBot()
                             val list = root.getAsJsonArray("message")
                             root.getAsJsonArray("message")
                             val chain = gson.fromJson(list, MessageChain::class.java)
-                            val event = GroupMessageEvent(botID, ts, groupID, sender, chain)
+                            val event = GroupMessageEvent(botID, ts, groupID, sender, chain, id)
+                            eventBus.broadcast(event)
+                        }
+                        "private" -> {
+                            val sender = root.getAsJsonObject("sender").let {
+                                UserInfo(
+                                    it.getAsJsonPrimitive("user_id").asLong,
+                                    it.getAsJsonPrimitive("nickname").asString,
+                                    null,
+                                    it.getAsJsonPrimitive("card")?.asString
+                                )
+                            }
+                            val list = root.getAsJsonArray("message")
+                            root.getAsJsonArray("message")
+                            val chain = gson.fromJson(list, MessageChain::class.java)
+                            val event = PrivateMessageEvent(botID, ts, sender, chain, id)
                             eventBus.broadcast(event)
                         }
                     }
