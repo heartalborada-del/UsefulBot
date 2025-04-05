@@ -5,4 +5,4 @@ data class HeartBeatEvent(
     val good: Boolean,
     val botID: Long,
     val timestamp: Long
-): AbstractEvent()
+) : AbstractEvent()

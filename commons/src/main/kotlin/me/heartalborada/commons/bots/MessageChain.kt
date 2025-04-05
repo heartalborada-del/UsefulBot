@@ -1,8 +1,6 @@
 package me.heartalborada.commons.bots
 
 import me.heartalborada.commons.bots.beans.FileInfo
-import java.io.File
-import java.util.*
 
 class MessageChain : MutableList<AbstractMessageObject> by mutableListOf() {
     override fun toString(): String {
@@ -50,7 +48,7 @@ class Face(val id: String) : AbstractMessageObject() {
     }
 }
 
-class Reply(val id: String) : AbstractMessageObject() {
+class Reply(val id: Long) : AbstractMessageObject() {
     override fun toString(): String {
         return "[Reply:$id]"
     }

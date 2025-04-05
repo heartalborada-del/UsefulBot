@@ -1,12 +1,10 @@
 package me.heartalborada.commons.comic
 
-import me.heartalborada.commons.bots.RpsResult
-
 data class ComicInformation<T>(
     val id: T,
     val title: String,
     val subtitle: String?,
-    val tags: Map<String,List<String>>,
+    val tags: Map<String, List<String>>,
     val category: Category,
     val cover: String,
     val pages: Int,

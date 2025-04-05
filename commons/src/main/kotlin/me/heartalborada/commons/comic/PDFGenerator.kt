@@ -5,31 +5,41 @@ import org.apache.pdfbox.pdmodel.PDDocument
 import org.apache.pdfbox.pdmodel.PDPage
 import org.apache.pdfbox.pdmodel.PDPageContentStream
 import org.apache.pdfbox.pdmodel.common.PDRectangle
+import org.apache.pdfbox.pdmodel.encryption.AccessPermission
+import org.apache.pdfbox.pdmodel.encryption.StandardProtectionPolicy
 import org.apache.pdfbox.pdmodel.font.PDType1Font
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts
+import org.apache.pdfbox.pdmodel.graphics.image.JPEGFactory
+import org.apache.pdfbox.pdmodel.graphics.image.LosslessFactory
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.Path
+import javax.imageio.ImageIO
+import kotlin.random.Random
 
 
 class PDFGenerator {
     companion object {
+        private val logger: Logger = LoggerFactory.getLogger(PDFGenerator::class.java)
+        private val pdType1Font = PDType1Font(Standard14Fonts.FontName.HELVETICA)
         fun generatePDF(
             images: List<File>,
             signatureText: String = "Null",
-            pdfFile: File = File("output.pdf"),
-            tempDir: File = File(System.getProperty("java.io.tmpdir"))
+            pdfFile: File,
+            tempDir: File = File(System.getProperty("java.io.tmpdir")),
+            password: String? = null
         ) {
             val cache = MemoryUsageSetting.setupMixed(Runtime.getRuntime().maxMemory() / 4)
             cache.tempDir = tempDir
 
             val doc = PDDocument(cache.streamCache)
-
+            if (password != null)
+                doc.protect(StandardProtectionPolicy(randomString(10),password, AccessPermission()))
             // 设置页面边距（单位: 点，1英寸=72点）
             val marginLeft = 10f
             val marginRight = 10f
-            val marginTop = 14f
+            val marginTop = 12f
             val marginBottom = 10f
 
             // 签名文本信息
@@ -46,8 +56,9 @@ class PDFGenerator {
                 val availableWidth = pageWidth - marginLeft - marginRight
                 val availableHeight = pageHeight - marginTop - marginBottom
 
-                //TODO NO WEBP SUPPORT
-                val image = PDImageXObject.createFromFileByContent(it, doc)
+                logger.debug("Read Image: {}", it.path)
+                val a = ImageIO.read(it)
+                val image = JPEGFactory.createFromImage(doc, a)
 
                 val imageWidth = image.width.toFloat()
                 val imageHeight = image.height.toFloat()
@@ -74,7 +85,6 @@ class PDFGenerator {
                 val stream = PDPageContentStream(doc, page)
 
                 stream.beginText()
-                val pdType1Font = PDType1Font(Standard14Fonts.FontName.HELVETICA)
 
                 stream.setFont(pdType1Font, signatureTextSize)
                 val textWidth = pdType1Font.getStringWidth(signatureText) / 1000 * signatureTextSize
@@ -94,6 +104,15 @@ class PDFGenerator {
             }
             doc.save(pdfFile)
             doc.close()
+        }
+        private const val CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+        fun randomString(length: Int = 10): String {
+            val sb = StringBuilder(length)
+            for (i in 0..<length) {
+                val randomIndex = Random.nextInt(CHARS.length)
+                sb.append(CHARS[randomIndex])
+            }
+            return sb.toString()
         }
     }
 }

@@ -9,4 +9,4 @@ class PrivateMessageEvent(
     val sender: UserInfo,
     val message: MessageChain,
     val messageID: Long,
-): AbstractEvent()
+) : AbstractEvent()

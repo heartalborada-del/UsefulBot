@@ -1,7 +1,8 @@
 package me.heartalborada.commons.comic
 
-import me.heartalborada.commons.ActionResponse
-
 abstract class AbstractComicProvider<T> {
-    abstract fun getTargetInformation(target: T): ActionResponse<ComicInformation<T>>
+    abstract fun getTargetInformation(target: T): ComicInformation<T>
+    abstract fun getPageImageUrl(target: T, pages: Map<Int, String>): Map<Int, String>
+    abstract fun getAllPages(target: T): Map<Int, String>
+    abstract fun parseUrl(url: String): T
 }

@@ -1,7 +1,7 @@
 package me.heartalborada.commons.bots.events
 
-import me.heartalborada.commons.bots.beans.UserInfo
 import me.heartalborada.commons.bots.MessageChain
+import me.heartalborada.commons.bots.beans.UserInfo
 
 data class GroupMessageEvent(
     val botID: Long,
@@ -10,4 +10,4 @@ data class GroupMessageEvent(
     val sender: UserInfo,
     val message: MessageChain,
     val messageID: Long,
-): AbstractEvent()
+) : AbstractEvent()
