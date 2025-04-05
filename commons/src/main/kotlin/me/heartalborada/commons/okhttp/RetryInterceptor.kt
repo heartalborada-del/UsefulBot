@@ -5,6 +5,7 @@ import okhttp3.Response
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.DurationUnit
@@ -20,11 +21,11 @@ class RetryInterceptor(
         val request = chain.request()
         var response: Response?
         var exception: Throwable? = null
-        var retryCount = 0
+        val retryCount = AtomicInteger(0)
         if (waitHosts.contains(request.url.host)) {
             Thread.sleep(200)
         }
-        while (retryCount < maxRetries) {
+        while (retryCount.get() < maxRetries) {
             try {
                 response = chain.proceed(request)
                 if (response.isSuccessful) {
@@ -35,14 +36,15 @@ class RetryInterceptor(
                 } else {
                     Thread.sleep(delay.toLong(DurationUnit.MILLISECONDS))
                 }
-                retryCount++
+                retryCount.addAndGet(1)
                 response.close()
             } catch (e: Throwable) {
                 exception = e
-                retryCount++
+                retryCount.addAndGet(1)
                 Thread.sleep(delay.toLong(DurationUnit.MILLISECONDS))
             } finally {
-                logger.debug("Retrying url: [{}]{}, Count: {}", request.method, request.url, retryCount)
+                if(retryCount.get() != 0)
+                    logger.debug("Retrying url: [{}]{}, Count: {}", request.method, request.url, retryCount)
             }
         }
         throw exception ?: IOException("Run out of retries")

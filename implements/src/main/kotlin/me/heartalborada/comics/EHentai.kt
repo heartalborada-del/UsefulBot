@@ -65,7 +65,7 @@ class EHentai(
             .addInterceptor(
                 RetryInterceptor(
                     delay429 = 5000.milliseconds,
-                    maxRetries = 5,
+                    maxRetries = 10,
                     waitHosts = arrayOf(apiUrl)
                 )
             )
@@ -75,6 +75,10 @@ class EHentai(
     }
 
     private val pageCache = CacheBuilder.newBuilder()
+        .expireAfterWrite(24, java.util.concurrent.TimeUnit.HOURS)
+        .maximumSize(1024)
+        .build<Pair<String, String>, Map<Int, String>>()
+    private val pageUrlCache = CacheBuilder.newBuilder()
         .expireAfterWrite(24, java.util.concurrent.TimeUnit.HOURS)
         .maximumSize(1024)
         .build<Pair<String, String>, Map<Int, String>>()
@@ -238,10 +242,13 @@ class EHentai(
     }
 
     override fun getPageImageUrl(target: Pair<String, String>, pages: Map<Int, String>): Map<Int, String> {
+        val cached = pageUrlCache.getIfPresent(target)
+        if (cached != null) return cached
         val result = mutableMapOf<Int, String>()
         for (page in pages) {
             result[page.key] = getSinglePageImageUrl(target, page.toPair())
         }
+        pageUrlCache.put(target, result)
         return result
     }
 

@@ -1,85 +1,52 @@
 package me.heartalborada.commons.downloader
 
+import kotlinx.coroutines.*
+import me.heartalborada.commons.okhttp.DoH
+import me.heartalborada.commons.okhttp.RetryInterceptor
+import okhttp3.Cache
 import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.internal.closeQuietly
+import org.slf4j.LoggerFactory
 import java.io.File
-import java.io.FileOutputStream
-import java.io.IOException
-import java.io.RandomAccessFile
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.milliseconds
 
 class MultiThreadedDownloadManager(
     threadCount: Int,
-    private val client:OkHttpClient = OkHttpClient.Builder()
-    .connectTimeout(30, TimeUnit.SECONDS)
-    .readTimeout(30, TimeUnit.SECONDS)
-    .build()
+    private val parentClient: OkHttpClient = OkHttpClient.Builder().build(),
+    private val cacheFolder: File = File(System.getProperty("java.io.tmpdir"))
 ) {
-
-    private val executor = Executors.newFixedThreadPool(threadCount)
-
-    fun downloadFiles(urls: List<String>, destDir: File) {
+    private val logger = LoggerFactory.getLogger(this::class.java)
+    private val downloadDispatcher = Executors.newFixedThreadPool(threadCount).asCoroutineDispatcher()
+    private val okHttpClient: OkHttpClient by lazy {
+        parentClient.newBuilder()
+            .cache(Cache(cacheFolder, 1024L * 1024L * 1024L))
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .dns(DoH()).build()
+    }
+    fun downloadFiles(urls: List<Pair<String,String?>>, destDir: File): MutableList<Pair<String, String?>> {
         if (!destDir.exists()) destDir.mkdirs()
-
-        urls.forEach { url ->
-            val fileName = url.substring(url.lastIndexOf('/') + 1)
-            val destFile = File(destDir, fileName)
-            val downloadTask = DownloadTask(url, destFile, client)
-            executor.submit(downloadTask)
-        }
-    }
-
-    fun shutdown() {
-        executor.shutdown()
-        try {
-            if (!executor.awaitTermination(60, TimeUnit.SECONDS)) {
-                executor.shutdownNow()
-            }
-        } catch (e: InterruptedException) {
-            executor.shutdownNow()
-        }
-    }
-
-    class DownloadTask(
-        private val url: String,
-        private val destFile: File,
-        private val client: OkHttpClient
-    ) : Runnable {
-        override fun run() {
-            try {
-                val downloadedLength = if (destFile.exists()) destFile.length() else 0L
-                val request = Request.Builder()
-                    .url(url)
-                    .addHeader("Range", "bytes=$downloadedLength-")
-                    .build()
-
-                client.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) throw IOException("Failed to download file: $response")
-
-                    saveFile(response, downloadedLength)
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-
-        @Throws(IOException::class)
-        private fun saveFile(response: Response, downloadedLength: Long) {
-            val body = response.body ?: throw IOException("Response body is null")
-            val totalLength = downloadedLength + body.contentLength()
-            RandomAccessFile(destFile, "rw").use { raf ->
-                raf.seek(downloadedLength)
-                val buffer = ByteArray(1024)
-                var len: Int
-                body.byteStream().use { input ->
-                    while (input.read(buffer).also { len = it } != -1) {
-                        raf.write(buffer, 0, len)
+        val failedDownloads = mutableListOf<Pair<String, String?>>()
+        runBlocking {
+            urls.map { url ->
+                async(downloadDispatcher) {
+                    try {
+                        logger.debug("Downloading {}", url)
+                        val fileName = if (url.second != null) {
+                            url.second!!
+                        } else {
+                            url.first.substring(url.first.lastIndexOf('/') + 1)
+                        }
+                        val destFile = File(destDir, fileName)
+                        val downloadTask = DownloadTask(url.first, destFile, okHttpClient)
+                        downloadTask.download()
+                    } catch (e: Exception) {
+                        logger.debug("Failed to download {}", url, e)
+                        failedDownloads.add(url)
                     }
                 }
-            }
+            }.awaitAll()
         }
+        return failedDownloads
     }
 }

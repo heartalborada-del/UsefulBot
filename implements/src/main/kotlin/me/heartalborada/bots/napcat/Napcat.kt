@@ -16,13 +16,11 @@ import me.heartalborada.commons.bots.beans.ApiCommon
 import me.heartalborada.commons.bots.beans.FileInfo
 import me.heartalborada.commons.bots.beans.UserInfo
 import me.heartalborada.commons.bots.events.*
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
+import okhttp3.*
 import okio.IOException
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import java.io.File
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -34,22 +32,20 @@ class Napcat(
     private var token: String,
     isCommandStartWithAt: Boolean = true,
     commandOperator: Char = '/',
-    commandDivider: Char = ' '
-) : AbstractBot(isCommandStartWithAt, commandOperator, commandDivider) {
+    commandDivider: Char = ' ',
+    tempDir: File = File(System.getProperty("java.io.tmpdir")),
+    ) : AbstractBot(isCommandStartWithAt, commandOperator, commandDivider) {
     private val logger: Logger = LoggerFactory.getLogger(this::class.java)
     private var isConnected = false
     private var eventWS: WebSocket? = null
     private var apiWS: WebSocket? = null
-    private var httpClient = OkHttpClient()
+    private var httpClient = OkHttpClient.Builder().cache(Cache(tempDir, 1024L * 1024L * 1024L)).build()
     private val eventBus = EventBus()
     private val mutex = Mutex()
     private val gson = GsonBuilder().registerTypeAdapter(MessageChain::class.java, MessageChainTypeAdapter()).create()
     private val botContext: CoroutineContext by lazy {
         val dispatcher = Executors.newFixedThreadPool(4).asCoroutineDispatcher()
-        val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
-            throwable.printStackTrace()
-        }
-        SupervisorJob() + dispatcher + exceptionHandler + CoroutineName("NapcatScope")
+        SupervisorJob() + dispatcher + CoroutineName("NapcatScope")
     }
     private var botID: Long = 0L
     private val apiScope = CoroutineScope(botContext)
@@ -168,7 +164,7 @@ class Napcat(
     }
 
     override fun sendFile(type: ChatType, id: Long, fileInfo: FileInfo): Long {
-        logger.debug("[Send] {} -> [{}] {} {}", botID, type.name, id, fileInfo.name)
+        logger.debug("[Send] {} -> [{}] [{}] {}", botID, type.name, id, fileInfo.name)
         if (fileInfo.url == null) throw IllegalArgumentException("Invalid file url")
         return runBlocking {
             withContext(botContext) {
@@ -192,22 +188,27 @@ class Napcat(
                         val responseDiffered = CompletableDeferred<String>()
                         pendingReqs[uuid] = responseDiffered
                         val sent = apiWS?.send(gson.toJson(ApiCommon(action, uuid, data))) == true
-                        if (!sent) throw IllegalStateException("Failed to send message")
-                        val response = withTimeoutOrNull(5000.milliseconds) {
+                        if (!sent) throw IllegalStateException("Failed to send file")
+                        val response = withTimeoutOrNull(50000.milliseconds) {
                             responseDiffered.await().also {
                                 pendingReqs.remove(uuid)
                             }
                         }.also { pendingReqs.remove(uuid) }
                         if (response == null) throw IOException("Timeout")
                         val root = JsonParser.parseString(response).asJsonObject
+                        val rdata = root.getAsJsonObject("data")
+                        if (rdata.isJsonNull) return@withContext -1
                         when (val code = root.getAsJsonPrimitive("retcode").asInt) {
-                            0 -> return@withContext root.getAsJsonObject("data").getAsJsonPrimitive("message_id").asLong
+                            0 -> return@withContext rdata.getAsJsonPrimitive("message_id").asLong
                             else -> throw IllegalReceiveException("Invalid response code: $code, message: ${root.getAsJsonPrimitive("message").asString}")
                         }
-                        return@withContext 0
                     } catch (e: Exception) {
                         pendingReqs.remove(uuid)
-                        logger.error("An unexpected error occurred.", e)
+                        if(e.message != "Timeout") {
+                            return@withContext -1
+                        } else {
+                            logger.error("An unexpected error occurred.", e)
+                        }
                         throw e
                     }
                 }

@@ -1,9 +1,6 @@
 package me.heartalborada.commons.bots
 
-import kotlinx.coroutines.CoroutineName
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
 import me.heartalborada.commons.ActionResponse
 import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.beans.FileInfo
@@ -15,6 +12,7 @@ import me.heartalborada.commons.commands.CommandExecutor
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.util.*
+import kotlin.coroutines.CoroutineContext
 
 abstract class AbstractBot(
     private val isCommandStartWithAt: Boolean = true,
@@ -22,7 +20,10 @@ abstract class AbstractBot(
     private val commandDivider: Char = ' '
 ) {
     private val logger: Logger = LoggerFactory.getLogger(this::class.java)
-    private val commonScope = CoroutineScope(CoroutineName("BotExecutorScope"))
+    private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        logger.error("An unexpected error occurred.", throwable)
+    }
+    private val commonScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + exceptionHandler + CoroutineName("BotExecutorScope"))
 
     private val commandMap = mutableMapOf<String, CommandExecutor>()
     private var isRegistered: Boolean = false

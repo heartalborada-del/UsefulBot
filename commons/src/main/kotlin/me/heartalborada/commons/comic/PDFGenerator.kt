@@ -1,5 +1,6 @@
 package me.heartalborada.commons.comic
 
+import me.heartalborada.commons.Util.Companion.randomString
 import org.apache.pdfbox.io.MemoryUsageSetting
 import org.apache.pdfbox.pdmodel.PDDocument
 import org.apache.pdfbox.pdmodel.PDPage
@@ -104,15 +105,6 @@ class PDFGenerator {
             }
             doc.save(pdfFile)
             doc.close()
-        }
-        private const val CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-        fun randomString(length: Int = 10): String {
-            val sb = StringBuilder(length)
-            for (i in 0..<length) {
-                val randomIndex = Random.nextInt(CHARS.length)
-                sb.append(CHARS[randomIndex])
-            }
-            return sb.toString()
         }
     }
 }
