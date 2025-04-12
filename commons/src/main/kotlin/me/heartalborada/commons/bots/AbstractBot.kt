@@ -1,7 +1,6 @@
 package me.heartalborada.commons.bots
 
 import kotlinx.coroutines.*
-import me.heartalborada.commons.ActionResponse
 import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.beans.FileInfo
 import me.heartalborada.commons.bots.beans.MessageSender
@@ -53,6 +52,7 @@ abstract class AbstractBot(
             }
         )
     }
+
     open fun close(): Boolean {
         commonScope.cancel()
         commandMap.clear()

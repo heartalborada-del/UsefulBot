@@ -50,7 +50,7 @@ class DownloadTask(
                 } catch (e: SSLException) {
                     if (retryCount < maxRetries) {
                         retryCount++
-                        logger.info("SSL error occurred, retrying ($retryCount/$maxRetries)...")
+                        logger.debug("SSL error occurred, retrying ($retryCount/$maxRetries)...")
                         delayRetry(retryCount)
                         continue
                     }
@@ -58,7 +58,7 @@ class DownloadTask(
                 } catch (e: IOException) {
                     if (retryCount < maxRetries) {
                         retryCount++
-                        logger.info("IO error occurred, retrying ($retryCount/$maxRetries)...")
+                        logger.debug("IO error occurred, retrying ($retryCount/$maxRetries)...")
                         delayRetry(retryCount)
                         continue
                     }

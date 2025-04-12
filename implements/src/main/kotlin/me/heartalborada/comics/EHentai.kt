@@ -2,6 +2,7 @@ package me.heartalborada.comics
 
 import com.google.common.cache.CacheBuilder
 import com.google.gson.JsonParser
+import com.google.gson.JsonSyntaxException
 import me.heartalborada.commons.comic.AbstractComicProvider
 import me.heartalborada.commons.comic.ComicInformation
 import me.heartalborada.commons.comic.PDFGenerator
@@ -20,6 +21,7 @@ import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
+import kotlin.jvm.Throws
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.DurationUnit
@@ -108,6 +110,10 @@ class EHentai(
         } else {
             throw IllegalArgumentException("Invalid url $url")
         }
+    }
+
+    fun getArchiveUrl(target: Pair<String, String>): String {
+        TODO("Not yet implemented")
     }
 
     private fun parseShowKey(document: Document): String {
@@ -206,6 +212,7 @@ class EHentai(
                 extra = variables
             )
             infoCache.put(target, info)
+            logger.debug("Resolved information: {}",info.toString())
             return info
         }
     }
@@ -222,7 +229,7 @@ class EHentai(
                 if (!resp.isSuccessful || resp.code != 200) throw IllegalStateException("Invalid status code: ${resp.code}")
                 val body = resp.body?.string()
                 val document = body?.let { org.jsoup.Jsoup.parse(it) }
-                document?.select("#gdt > a")?.forEach { it ->
+                document?.select("#gdt > a")?.forEach {
                     //url: https://e-hentai.org/s/3dc9c29de8/3302182-40
                     val link = it.attr("href")
                     pageKeyUrlRegex.find(link)?.let { its ->

@@ -8,7 +8,6 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import me.heartalborada.bots.MessageChainTypeAdapter
-import me.heartalborada.commons.ActionResponse
 import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.AbstractBot
 import me.heartalborada.commons.bots.MessageChain
@@ -287,7 +286,7 @@ class Napcat(
             }
         }
 
-        override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             logger.error("An unexpected error occurred.", t)
         }
     }
@@ -307,7 +306,7 @@ class Napcat(
             }
         }
 
-        override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             logger.error("An unexpected error occurred.", t)
         }
     }
