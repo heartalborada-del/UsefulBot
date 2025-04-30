@@ -161,7 +161,7 @@ fun main() {
                         return
                     }
                     count++
-                    list = downloader.downloadFiles(list, archiveFolder)
+                    list = downloader.downloadFiles(list, archiveFolder,10)
                 }
                 Util.unzip(File(archiveFolder,"${u.first}-${u.second}"), cf)
                 pdfFolder.mkdirs()
