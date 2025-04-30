@@ -8,9 +8,10 @@ import me.heartalborada.commons.bots.PlainText
 import me.heartalborada.commons.bots.Reply
 import me.heartalborada.commons.bots.beans.FileInfo
 import me.heartalborada.commons.bots.beans.MessageSender
+import me.heartalborada.commons.comic.ArchiveInformation
 import me.heartalborada.commons.comic.PDFGenerator
 import me.heartalborada.commons.commands.CommandExecutor
-import me.heartalborada.commons.downloader.MultiThreadedDownloadManager
+import me.heartalborada.commons.downloader.DownloadManager
 import me.heartalborada.commons.okhttp.CookieStorageProvider
 import okhttp3.Cookie
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -33,9 +34,10 @@ private val pdfCache = CacheBuilder.newBuilder()
 private val dataFolder = File("data")
 private val tempFolder = File(dataFolder, "temp")
 private val pdfFolder = File(dataFolder, "pdf")
-private val ehFolder = File(dataFolder, "eh")
+private val imgFolder = File(dataFolder, "img")
+private val archiveFolder = File(dataFolder, "archive")
 
-private val logger = LoggerFactory.getLogger("main")
+private val logger = LoggerFactory.getLogger("Main")
 private val ALLOW_SUFFIX = setOf("jpg", "jpeg", "gif", "png", "webp")
 
 private val config = MainConfig(File(dataFolder, "config.json"))
@@ -43,7 +45,28 @@ private lateinit var client: OkHttpClient
 private lateinit var eh: EHentai
 
 fun main() {
-    client = if (config.getConfig().proxy.type == java.net.Proxy.Type.DIRECT) {
+    logger.info("Initializing...")
+    val cookieJar = CookieStorageProvider()
+    val ck = mutableListOf<Cookie>().let {
+        it.add(
+            Cookie.Builder().name("ipb_member_id").domain("e-hentai.org").value(config.getConfig().eHentai.ipbMemberId)
+                .path("/").build()
+        )
+        it.add(
+            Cookie.Builder().name("ipb_pass_hash").domain("e-hentai.org")
+                .value(config.getConfig().eHentai.ipbPassHash).path("/").build()
+        )
+        it.add(
+            Cookie.Builder().name("igneous").domain("e-hentai.org").value(config.getConfig().eHentai.igneous).path("/")
+                .build()
+        )
+        it
+    }
+    if (config.getConfig().eHentai.isExHentai)
+        cookieJar.saveFromResponse(URL("https://exhentai.org/").toHttpUrlOrNull()!!, ck)
+    else
+        cookieJar.saveFromResponse(URL("https://e-hentai.org/").toHttpUrlOrNull()!!, ck)
+    client = if (config.getConfig().proxy.type == Proxy.Type.DIRECT) {
         OkHttpClient.Builder().build()
     } else {
         OkHttpClient.Builder()
@@ -54,45 +77,13 @@ fun main() {
                 )
             ).build()
     }
-    val cookieJar = CookieStorageProvider()
-    val ck = mutableListOf<Cookie>().let {
-        it.add(
-            Cookie.Builder().name("ipb_member_id").domain("e-hentai.org").value(config.getConfig().eHentai.ipbMemberId)
-                .path("/").build()
-        )
-        it.add(
-            Cookie.Builder().name("ipb_member_hash").domain("e-hentai.org")
-                .value(config.getConfig().eHentai.ipbMemberHash).path("/").build()
-        )
-        it.add(
-            Cookie.Builder().name("igneous").domain("e-hentai.org").value(config.getConfig().eHentai.igneous).path("/")
-                .build()
-        )
-        it.add(
-            Cookie.Builder().name("ipb_member_id").domain("exhentai.org").value(config.getConfig().eHentai.ipbMemberId)
-                .path("/").build()
-        )
-        it.add(
-            Cookie.Builder().name("ipb_member_hash").domain("exhentai.org")
-                .value(config.getConfig().eHentai.ipbMemberHash).path("/").build()
-        )
-        it.add(
-            Cookie.Builder().name("igneous").domain("exhentai.org").value(config.getConfig().eHentai.igneous).path("/")
-                .build()
-        )
-        it
-    }
-    if (config.getConfig().eHentai.isExHentai)
-        cookieJar.saveFromResponse(URL("https://exhentai.org/").toHttpUrlOrNull()!!, ck)
-    else
-        cookieJar.saveFromResponse(URL("https://e-hentai.org/").toHttpUrlOrNull()!!, ck)
-    eh = EHentai(parentClient = client, cacheFolder = tempFolder, isEx = config.getConfig().eHentai.isExHentai)
+    eh = EHentai(parentClient = client, cacheFolder = File(tempFolder,"okhttp"), isEx = config.getConfig().eHentai.isExHentai, cookieStorage = cookieJar)
+    logger.info("Connecting...")
     val bot = Napcat(
         config.getConfig().bot.websocketUrl,
         config.getConfig().bot.token,
         config.getConfig().bot.isCommandStartWithAt,
         commandOperator = config.getConfig().bot.commandOperator,
-        tempDir = tempFolder
     )
 
     bot.registerCommand(commands = arrayOf("info"), executor = object : CommandExecutor {
@@ -102,6 +93,7 @@ fun main() {
                     PlainText(
                         """
                     Powered by @heartalborada-del
+                    See code on: heartalborada-del/UsefulBot
                 """.trimIndent()
                     )
                 )
@@ -114,7 +106,7 @@ fun main() {
             val u: Pair<String, String>
             try {
                 u = eh.parseUrl(args.toString().trim())
-            } catch (e: IllegalArgumentException) {
+            } catch (_: IllegalArgumentException) {
                 bot.sendMessage(sender.type, sender.target, MessageChain().also {
                     it.add(Reply(messageID))
                     it.add(PlainText("Invalid URL"))
@@ -122,7 +114,7 @@ fun main() {
                 return
             }
             val p = File(pdfFolder, "${u.first}-${u.second}.pdf")
-            val cf = File(ehFolder, "${u.first}-${u.second}")
+            val cf = File(imgFolder, "${u.first}-${u.second}")
             cf.mkdirs()
             bot.sendMessage(sender.type, sender.target, MessageChain().also {
                 it.add(Reply(messageID))
@@ -130,11 +122,11 @@ fun main() {
             })
             try {
                 val info = eh.getTargetInformation(u)
-                val downloader = MultiThreadedDownloadManager(16, client, tempFolder)
+                val downloader = DownloadManager(16, client, File(tempFolder,"okhttp"))
                 val cover = "cover.${Util.getFileExtensionFromUrl(URL(info.cover))}"
-                downloader.downloadFiles(listOf(Pair(info.cover, cover)), cf)
+                downloader.downloadFiles(listOf(Pair(info.cover, cover)), cf, 2)
                 val image = ImageIO.read(File(cf, cover))
-                val blurred = Util.gaussianBlur(Util.resampleImage(Util.resampleImage(image, 0.125), 8.0))
+                val blurred = Util.gaussianBlur(Util.resampleImage(Util.resampleImage(image, 0.125), 8.0), radius = 10)
                 val base64 = Util.bufferedImageToBase64(blurred)
                 val message = MessageChain().also {
                     it.add(Reply(messageID))
@@ -158,14 +150,10 @@ fun main() {
                     )
                     return
                 }
-                val ps = eh.getAllPages(u)
-                val urls = eh.getPageImageUrl(u, ps)
-                var imgList = mutableListOf<Pair<String, String?>>()
-                for (i in 1..info.pages) {
-                    imgList.add(Pair(urls[i]!!, "p$i.${Util.getFileExtensionFromUrl(URL(urls[i]))}"))
-                }
+                val archiveUrl = eh.getArchiveDownloadUrl(u, ArchiveInformation("RESAMPLE"))
                 var count = 0
-                while (imgList.size > 0) {
+                var list = mutableListOf<Pair<String, String?>>(Pair(archiveUrl, "${u.first}-${u.second}"))
+                while (list.isNotEmpty()) {
                     if (count >= 3) {
                         bot.sendMessage(sender.type, sender.target, MessageChain().also {
                             it.add(PlainText("Error: Download failed, please contact the admin!"))
@@ -173,20 +161,23 @@ fun main() {
                         return
                     }
                     count++
-                    imgList = downloader.downloadFiles(imgList, cf)
+                    list = downloader.downloadFiles(list, archiveFolder)
                 }
+                Util.unzip(File(archiveFolder,"${u.first}-${u.second}"), cf)
                 pdfFolder.mkdirs()
                 cf.listFiles { it ->
                     ALLOW_SUFFIX.contains(
                         Util.getFileExtensionFromUrl(
                             it.toURI().toURL()
                         )
-                    ) && it.name.split(".")[0] != "cover"
+                    ) && it.name.split(".")[0] != "cover" && it.isFile && it.name.matches(Regex("^\\d+_.*"))
+                }?.sortedBy { file ->
+                    val numberPart = file.name.substringBefore("_").toIntOrNull() ?: Int.MAX_VALUE
+                    numberPart
                 }?.let {
                     PDFGenerator.generatePDF(
-                        it.toMutableList()
-                            .sortedBy { its -> its.name.substringAfter("p").substringBefore(".").toInt() },
-                        pdfFile = p, tempDir = tempFolder,
+                        it,
+                        pdfFile = p, tempDir = File(tempFolder,"pdf"),
                         password = "${u.first}-${u.second}",
                         signatureText = "Generated at:${
                             Instant.now().atZone(ZoneOffset.UTC)
@@ -206,7 +197,7 @@ fun main() {
             } catch (e: Exception) {
                 logger.error("An unexpected error occurred.", e)
                 bot.sendMessage(sender.type, sender.target, MessageChain().also {
-                    it.add(PlainText("Error: ${e.javaClass.packageName}.${e.javaClass.name}-${e.message}, please contact the admin!"))
+                    it.add(PlainText("Error: ${e.javaClass.packageName}.${e.javaClass.name}: ${e.message}, please contact the admin!"))
                 })
             }
         }

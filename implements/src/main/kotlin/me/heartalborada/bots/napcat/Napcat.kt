@@ -19,11 +19,13 @@ import okhttp3.*
 import okio.IOException
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import java.io.EOFException
 import java.io.File
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import kotlin.coroutines.CoroutineContext
+import kotlin.system.exitProcess
 import kotlin.time.Duration.Companion.milliseconds
 
 class Napcat(
@@ -32,13 +34,12 @@ class Napcat(
     isCommandStartWithAt: Boolean = true,
     commandOperator: Char = '/',
     commandDivider: Char = ' ',
-    tempDir: File = File(System.getProperty("java.io.tmpdir")),
     ) : AbstractBot(isCommandStartWithAt, commandOperator, commandDivider) {
     private val logger: Logger = LoggerFactory.getLogger(this::class.java)
     private var isConnected = false
     private var eventWS: WebSocket? = null
     private var apiWS: WebSocket? = null
-    private var httpClient = OkHttpClient.Builder().cache(Cache(tempDir, 1024L * 1024L * 1024L)).build()
+    private var httpClient = OkHttpClient.Builder().build()
     private val eventBus = EventBus()
     private val mutex = Mutex()
     private val gson = GsonBuilder().registerTypeAdapter(MessageChain::class.java, MessageChainTypeAdapter()).create()
@@ -53,7 +54,6 @@ class Napcat(
     init {
         connect()
     }
-
 
     override fun close(): Boolean {
         super.close()
@@ -288,6 +288,8 @@ class Napcat(
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             logger.error("An unexpected error occurred.", t)
+            logger.error("Exit.")
+            exitProcess(0)
         }
     }
 
@@ -307,6 +309,9 @@ class Napcat(
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            if (t is EOFException) {
+                return
+            }
             logger.error("An unexpected error occurred.", t)
         }
     }

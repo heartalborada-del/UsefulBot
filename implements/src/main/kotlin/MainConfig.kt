@@ -27,7 +27,7 @@ data class MainConfigData @JvmOverloads constructor(
     )
     data class EHentai @JvmOverloads constructor(
         @SerializedName("ipb_member_id") val ipbMemberId: String = "",
-        @SerializedName("ipb_member_hash") val ipbMemberHash: String = "",
+        @SerializedName("ipb_pass_hash") val ipbPassHash: String = "",
         @SerializedName("igneous") val igneous: String = "",
         @SerializedName("isExHentai") val isExHentai: Boolean = false,
     )
@@ -51,7 +51,7 @@ class MainConfig(private val configFile: File) : AbstractConfiguration<MainConfi
         val s = FileUtils.readFileToString(configFile, Charset.defaultCharset())
         try {
             config = gson.fromJson(s,MainConfigData::class.java)
-        } catch (ignore: Exception) {
+        } catch (_: Exception) {
             save()
         }
     }
