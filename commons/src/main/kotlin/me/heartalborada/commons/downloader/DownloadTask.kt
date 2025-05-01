@@ -1,19 +1,9 @@
 package me.heartalborada.commons.downloader
 
 import com.google.gson.Gson
-import kotlinx.coroutines.CoroutineName
-import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import me.heartalborada.commons.Util.Companion.mergeIntervals
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -22,7 +12,6 @@ import org.slf4j.LoggerFactory
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
-import java.util.concurrent.Executors
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 

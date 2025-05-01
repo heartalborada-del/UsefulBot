@@ -11,7 +11,6 @@ import me.heartalborada.commons.commands.CommandExecutor
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.util.*
-import kotlin.coroutines.CoroutineContext
 
 abstract class AbstractBot(
     private val isCommandStartWithAt: Boolean = true,

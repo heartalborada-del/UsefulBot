@@ -11,14 +11,10 @@ import org.apache.pdfbox.pdmodel.encryption.StandardProtectionPolicy
 import org.apache.pdfbox.pdmodel.font.PDType1Font
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts
 import org.apache.pdfbox.pdmodel.graphics.image.JPEGFactory
-import org.apache.pdfbox.pdmodel.graphics.image.LosslessFactory
-import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.io.File
 import javax.imageio.ImageIO
-import kotlin.random.Random
-
 
 class PDFGenerator {
     companion object {
@@ -33,7 +29,7 @@ class PDFGenerator {
         ) {
             val cache = MemoryUsageSetting.setupMixed(Runtime.getRuntime().maxMemory() / 4)
             cache.tempDir = tempDir
-
+            if (!cache.tempDir.exists()) cache.tempDir.mkdirs()
             val doc = PDDocument(cache.streamCache)
             if (password != null)
                 doc.protect(StandardProtectionPolicy(randomString(10),password, AccessPermission()))
@@ -57,7 +53,7 @@ class PDFGenerator {
                 val availableWidth = pageWidth - marginLeft - marginRight
                 val availableHeight = pageHeight - marginTop - marginBottom
 
-                logger.debug("Read Image: {}", it.path)
+                logger.trace("Read Image: {}", it.path)
                 val a = ImageIO.read(it)
                 val image = JPEGFactory.createFromImage(doc, a)
 

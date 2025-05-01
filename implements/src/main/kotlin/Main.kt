@@ -12,10 +12,12 @@ import me.heartalborada.commons.comic.ArchiveInformation
 import me.heartalborada.commons.comic.PDFGenerator
 import me.heartalborada.commons.commands.CommandExecutor
 import me.heartalborada.commons.downloader.DownloadManager
+import me.heartalborada.commons.economic.EconomicManager
 import me.heartalborada.commons.okhttp.CookieStorageProvider
 import okhttp3.Cookie
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
+import org.jetbrains.exposed.sql.Database
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.net.InetSocketAddress
@@ -41,6 +43,8 @@ private val logger = LoggerFactory.getLogger("Main")
 private val ALLOW_SUFFIX = setOf("jpg", "jpeg", "gif", "png", "webp")
 
 private val config = MainConfig(File(dataFolder, "config.json"))
+
+private val economic = EconomicManager(Database.connect("jdbc:h2:./data/gp", "org.h2.Driver"))
 private lateinit var client: OkHttpClient
 private lateinit var eh: EHentai
 
@@ -86,7 +90,7 @@ fun main() {
         commandOperator = config.getConfig().bot.commandOperator,
     )
 
-    bot.registerCommand(commands = arrayOf("info"), executor = object : CommandExecutor {
+    bot.registerCommand(commands = arrayOf("about"), executor = object : CommandExecutor {
         override suspend fun execute(sender: MessageSender, command: String, args: MessageChain, messageID: Long) {
             bot.sendMessage(sender.type, sender.target, MessageChain().also {
                 it.add(
@@ -103,6 +107,12 @@ fun main() {
 
     bot.registerCommand(commands = arrayOf("eh"), executor = object : CommandExecutor {
         override suspend fun execute(sender: MessageSender, command: String, args: MessageChain, messageID: Long) {
+            val (amount, success) = economic.userCheckIn(sender.user.userID.toULong())
+            if(success)
+                bot.sendMessage(sender.type, sender.target, MessageChain().also {
+                    it.add(Reply(messageID))
+                    it.add(PlainText("Auto check in successful! You have gained $amount GP."))
+                })
             val u: Pair<String, String>
             try {
                 u = eh.parseUrl(args.toString().trim())
@@ -139,16 +149,34 @@ fun main() {
                     it.add(Image(FileInfo("${info.title}.jpg", url = "base64://$base64")))
                 }
                 bot.sendMessage(sender.type, sender.target, message)
-                if (pdfCache.getIfPresent(u) == true) {
+                if (pdfCache.getIfPresent(u) == true || p.exists()) {
+                    bot.sendMessage(sender.type, sender.target, MessageChain().also {
+                        it.add(PlainText("Hit the cache, no cost!"))
+                    })
                     bot.sendFile(
                         sender.type,
                         sender.target,
                         FileInfo(
-                            "${u.first}-${u.second}",
+                            "${u.first}-${u.second}.pdf",
                             url = "file://${config.getConfig().bot.fileRelativePath}/${p.toRelativeString(pdfFolder)}"
                         )
                     )
                     return
+                }
+                eh.getArchiveInformation(u).forEach { it ->
+                    if(it.name == "RESAMPLE") {
+                        val cost = kotlin.math.ceil(Util.convertToBytes(it.size.replace(" ","")).toDouble() / 1024 / 1024).toLong()
+                        if(!economic.withdrawGP(sender.user.userID.toULong(),cost)) {
+                            bot.sendMessage(sender.type, sender.target, MessageChain().also {
+                                it.add(PlainText("Not enough GP. Please check your balance!"))
+                            })
+                            return
+                        } else {
+                            bot.sendMessage(sender.type, sender.target, MessageChain().also {
+                                it.add(PlainText("Cost: $cost GP, remaining: ${economic.getUser(sender.user.userID.toULong()).balance} GP. Preparing PDF..."))
+                            })
+                        }
+                    }
                 }
                 val archiveUrl = eh.getArchiveDownloadUrl(u, ArchiveInformation("RESAMPLE"))
                 var count = 0
@@ -161,7 +189,7 @@ fun main() {
                         return
                     }
                     count++
-                    list = downloader.downloadFiles(list, archiveFolder,10)
+                    list = downloader.downloadFiles(list, archiveFolder,4)
                 }
                 Util.unzip(File(archiveFolder,"${u.first}-${u.second}"), cf)
                 pdfFolder.mkdirs()
@@ -200,6 +228,46 @@ fun main() {
                     it.add(PlainText("Error: ${e.javaClass.packageName}.${e.javaClass.name}: ${e.message}, please contact the admin!"))
                 })
             }
+        }
+    })
+
+    bot.registerCommand(commands= arrayOf("checkin"), executor = object : CommandExecutor {
+        override suspend fun execute(
+            sender: MessageSender,
+            command: String,
+            args: MessageChain,
+            messageID: Long
+        ) {
+            val userId = sender.user.userID.toULong()
+            val (amount, success) = economic.userCheckIn(userId)
+            if (success) {
+                bot.sendMessage(sender.type, sender.target, MessageChain().also {
+                    it.add(Reply(messageID))
+                    it.add(PlainText("Check in successful! You have gained $amount GP."))
+                })
+            } else {
+                bot.sendMessage(sender.type, sender.target, MessageChain().also {
+                    it.add(Reply(messageID))
+                    it.add(PlainText("You have already checked in today."))
+                })
+            }
+        }
+    })
+
+    bot.registerCommand(commands= arrayOf("info"), executor = object : CommandExecutor {
+        override suspend fun execute(
+            sender: MessageSender,
+            command: String,
+            args: MessageChain,
+            messageID: Long
+        ) {
+            val u = economic.getUser(sender.user.userID.toULong())
+            bot.sendMessage(sender.type, sender.target, MessageChain().also {
+                it.add(Reply(messageID))
+                it.add(PlainText("Role: ${u.role.name}\n"))
+                it.add(PlainText("Balance: ${u.balance} GP\n"))
+                it.add(PlainText("Last Checkin time: ${u.checkinAt.atZone(ZoneOffset.UTC).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ssZ"))}"))
+            })
         }
     })
 }

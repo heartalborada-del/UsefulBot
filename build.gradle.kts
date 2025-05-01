@@ -3,8 +3,9 @@ plugins {
 }
 
 group = "me.heartalborada"
-version = "0.0.1"
+version = "0.1.0"
 
+val exposedVersion: String by project
 allprojects {
     version = rootProject.version
     repositories {
@@ -19,7 +20,10 @@ allprojects {
         implementation("com.squareup.okhttp3:okhttp:4.12.0")
         implementation("com.google.code.gson:gson:2.12.1")
         implementation("org.slf4j:slf4j-api:2.0.17")
-        implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
+        implementation("commons-io:commons-io:2.18.0")
+        implementation("org.jetbrains.exposed:exposed-core:${exposedVersion}")
+        implementation("org.jetbrains.exposed:exposed-jdbc:${exposedVersion}")
+        implementation("org.jetbrains.exposed:exposed-dao:${exposedVersion}")
     }
 }
 

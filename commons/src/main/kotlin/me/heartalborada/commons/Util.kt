@@ -9,14 +9,11 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URL
-import java.nio.file.Files
 import java.util.*
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import javax.imageio.ImageIO
-import kotlin.io.use
 import kotlin.random.Random
-import kotlin.use
 
 class Util {
     companion object {
@@ -125,6 +122,30 @@ class Util {
                     }
                     zipInputStream.closeEntry()
                 }
+            }
+        }
+        fun convertToBytes(size: String): Long {
+            val regex = Regex("(\\d+(\\.\\d+)?)([a-zA-Z]+)")
+            val matchResult = regex.matchEntire(size)
+
+            if (matchResult != null) {
+                val (value, _, unit) = matchResult.destructured
+                val numericValue = value.toDouble()
+
+                return when (unit.uppercase()) {
+                    "B" -> (numericValue).toLong()
+                    "KIB" -> (numericValue * 1024).toLong()
+                    "MIB" -> (numericValue * 1024 * 1024).toLong()
+                    "GIB" -> (numericValue * 1024 * 1024 * 1024).toLong()
+                    "TIB" -> (numericValue * 1024 * 1024 * 1024 * 1024).toLong()
+                    "KB" -> (numericValue * 1000).toLong()
+                    "MB" -> (numericValue * 1000 * 1000).toLong()
+                    "GB" -> (numericValue * 1000 * 1000 * 1000).toLong()
+                    "TB" -> (numericValue * 1000 * 1000 * 1000 * 1000).toLong()
+                    else -> throw IllegalArgumentException("Unknown unit: $unit")
+                }
+            } else {
+                throw IllegalArgumentException("Invalid size format: $size")
             }
         }
     }

@@ -1,6 +1,5 @@
 package me.heartalborada.commons.downloader
 
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll

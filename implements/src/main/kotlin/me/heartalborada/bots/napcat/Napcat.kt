@@ -20,7 +20,6 @@ import okio.IOException
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.io.EOFException
-import java.io.File
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -216,7 +215,19 @@ class Napcat(
     }
 
     private inner class EventListener : WebSocketListener() {
+        override fun onOpen(webSocket: WebSocket, response: Response) {
+            logger.info("Connected to $wsURL")
+            isConnected = true
+        }
+
+        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            logger.info("Disconnected from $wsURL")
+            eventWS?.close(1000, "Close")
+            isConnected = false
+        }
+
         override fun onMessage(webSocket: WebSocket, text: String) {
+            logger.trace("Event Raw Json: $text")
             try {
                 val root = JsonParser.parseString(text).asJsonObject
                 val ts = root.getAsJsonPrimitive("time").asLong
@@ -295,6 +306,7 @@ class Napcat(
 
     private inner class ApiListener : WebSocketListener() {
         override fun onMessage(webSocket: WebSocket, text: String) {
+            logger.trace("Api Raw Json: $text")
             apiScope.launch {
                 try {
                     val json = JsonParser.parseString(text).asJsonObject
