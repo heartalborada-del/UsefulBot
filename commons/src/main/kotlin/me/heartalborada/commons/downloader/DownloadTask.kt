@@ -15,7 +15,7 @@ import java.io.RandomAccessFile
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 
-class DownloadTask (
+class DownloadTask(
     private val url: String,
     destFile: File,
     private val progressFile: File,
@@ -44,7 +44,7 @@ class DownloadTask (
         }
         logger.debug("File Size: $size")
 
-        if(progressFile.exists()) {
+        if (progressFile.exists()) {
             val l = FileUtils.readFileToString(progressFile, Charsets.UTF_8)
             try {
                 val np = Gson().fromJson(l, ProgressData::class.java)
@@ -64,7 +64,7 @@ class DownloadTask (
             }
             val finish = tasks.awaitAll()
             withContext(NonCancellable) {
-                val d = mergeIntervals(progress.downloaded+finish)
+                val d = mergeIntervals(progress.downloaded + finish)
                 progress.downloaded = d
                 saveProgress()
             }
@@ -121,8 +121,8 @@ class DownloadTask (
         suspend fun save(bytes: ByteArray, length: Int) {
             mutex.withLock {
                 randomAccessFile.seek(position)
-                randomAccessFile.write(bytes,0,length)
-                position+= length.toLong()
+                randomAccessFile.write(bytes, 0, length)
+                position += length.toLong()
             }
         }
     }

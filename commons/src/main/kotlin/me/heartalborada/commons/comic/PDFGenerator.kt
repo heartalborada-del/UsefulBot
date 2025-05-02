@@ -32,7 +32,7 @@ class PDFGenerator {
             if (!cache.tempDir.exists()) cache.tempDir.mkdirs()
             val doc = PDDocument(cache.streamCache)
             if (password != null)
-                doc.protect(StandardProtectionPolicy(randomString(10),password, AccessPermission()))
+                doc.protect(StandardProtectionPolicy(randomString(10), password, AccessPermission()))
             // 设置页面边距（单位: 点，1英寸=72点）
             val marginLeft = 10f
             val marginRight = 10f

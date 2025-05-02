@@ -14,7 +14,14 @@ import me.heartalborada.commons.bots.MessageChain
 import me.heartalborada.commons.bots.beans.ApiCommon
 import me.heartalborada.commons.bots.beans.FileInfo
 import me.heartalborada.commons.bots.beans.UserInfo
-import me.heartalborada.commons.bots.events.*
+import me.heartalborada.commons.bots.events.EventBus
+import me.heartalborada.commons.bots.events.message.GroupMessageEvent
+import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
+import me.heartalborada.commons.bots.events.meta.BotOnlineEvent
+import me.heartalborada.commons.bots.events.meta.HeartBeatEvent
+import me.heartalborada.commons.bots.events.notice.*
+import me.heartalborada.commons.bots.events.request.FriendAddRequestEvent
+import me.heartalborada.commons.bots.events.request.GroupAddRequestEvent
 import okhttp3.*
 import okio.IOException
 import org.slf4j.Logger
@@ -33,7 +40,7 @@ class Napcat(
     isCommandStartWithAt: Boolean = true,
     commandOperator: Char = '/',
     commandDivider: Char = ' ',
-    ) : AbstractBot(isCommandStartWithAt, commandOperator, commandDivider) {
+) : AbstractBot(isCommandStartWithAt, commandOperator, commandDivider) {
     private val logger: Logger = LoggerFactory.getLogger(this::class.java)
     private var isConnected = false
     private var eventWS: WebSocket? = null
@@ -94,10 +101,12 @@ class Napcat(
                                 data["group_id"] = id
                                 "send_group_msg"
                             }
+
                             ChatType.PRIVATE -> {
                                 data["user_id"] = id
                                 "send_private_msg"
                             }
+
                             else -> throw IllegalArgumentException("Invalid chat type")
                         }
                         val responseDiffered = CompletableDeferred<String>()
@@ -113,7 +122,13 @@ class Napcat(
                         val root = JsonParser.parseString(response).asJsonObject
                         when (val code = root.getAsJsonPrimitive("retcode").asInt) {
                             0 -> return@withContext root.getAsJsonObject("data").getAsJsonPrimitive("message_id").asLong
-                            else -> throw IllegalReceiveException("Invalid response code: $code, message: ${root.getAsJsonPrimitive("message").asString}")
+                            else -> throw IllegalReceiveException(
+                                "Invalid response code: $code, message: ${
+                                    root.getAsJsonPrimitive(
+                                        "message"
+                                    ).asString
+                                }"
+                            )
                         }
                     } catch (e: Exception) {
                         pendingReqs.remove(uuid)
@@ -149,7 +164,13 @@ class Napcat(
                         val root = JsonParser.parseString(response).asJsonObject
                         when (val code = root.getAsJsonPrimitive("retcode").asInt) {
                             0 -> return@withContext true
-                            else -> throw IllegalReceiveException("Invalid response code: $code, message: ${root.getAsJsonPrimitive("message").asString}")
+                            else -> throw IllegalReceiveException(
+                                "Invalid response code: $code, message: ${
+                                    root.getAsJsonPrimitive(
+                                        "message"
+                                    ).asString
+                                }"
+                            )
                         }
                     } catch (e: Exception) {
                         pendingReqs.remove(uuid)
@@ -177,10 +198,12 @@ class Napcat(
                                 data["group_id"] = id
                                 "upload_group_file"
                             }
+
                             ChatType.PRIVATE -> {
                                 data["user_id"] = id
                                 "upload_private_file"
                             }
+
                             else -> throw IllegalArgumentException("Invalid chat type")
                         }
                         val responseDiffered = CompletableDeferred<String>()
@@ -198,11 +221,17 @@ class Napcat(
                         if (rdata.isJsonNull) return@withContext -1
                         when (val code = root.getAsJsonPrimitive("retcode").asInt) {
                             0 -> return@withContext rdata.getAsJsonPrimitive("message_id").asLong
-                            else -> throw IllegalReceiveException("Invalid response code: $code, message: ${root.getAsJsonPrimitive("message").asString}")
+                            else -> throw IllegalReceiveException(
+                                "Invalid response code: $code, message: ${
+                                    root.getAsJsonPrimitive(
+                                        "message"
+                                    ).asString
+                                }"
+                            )
                         }
                     } catch (e: Exception) {
                         pendingReqs.remove(uuid)
-                        if(e.message != "Timeout") {
+                        if (e.message != "Timeout") {
                             return@withContext -1
                         } else {
                             logger.error("An unexpected error occurred.", e)
@@ -290,6 +319,146 @@ class Napcat(
                                 eventBus.broadcast(event)
                             }
                         }
+                    }
+
+                    "notice" -> {
+                        when (root.getAsJsonPrimitive("notice_type").asString) {
+                            "group_upload" -> {
+                                val groupID = root.getAsJsonPrimitive("group_id").asLong
+                                val uploader = root.getAsJsonPrimitive("user_id").asLong
+                                val fileInfo = root.getAsJsonObject("file").let {
+                                    FileInfo(
+                                        it.getAsJsonPrimitive("name").asString,
+                                        it.getAsJsonPrimitive("size").asLong,
+                                        it.getAsJsonPrimitive("id").asString
+                                    )
+                                }
+                                val event = GroupFileUploadEvent(botID, ts, groupID, uploader, fileInfo)
+                                eventBus.broadcast(event)
+                            }
+
+                            "group_admin" -> {
+                                val groupID = root.getAsJsonPrimitive("group_id").asLong
+                                val userID = root.getAsJsonPrimitive("user_id").asLong
+                                val type = if (root.getAsJsonPrimitive("sub_type").asString == "set") {
+                                    GroupAdminChangeEvent.ActionType.ADD
+                                } else {
+                                    GroupAdminChangeEvent.ActionType.REMOVE
+                                }
+                                val event = GroupAdminChangeEvent(botID, ts, groupID, userID, type)
+                                eventBus.broadcast(event)
+                            }
+
+                            "group_decrease" -> {
+                                val groupID = root.getAsJsonPrimitive("group_id").asLong
+                                val userID = root.getAsJsonPrimitive("user_id").asLong
+                                val operatorID = root.getAsJsonPrimitive("operator_id").asLong
+                                val tts = root.getAsJsonPrimitive("sub_type").asString
+                                val type = if (tts == "leave") {
+                                    GroupMemberDecreaseEvent.ActionType.LEAVE
+                                } else if (tts == "kick") {
+                                    GroupMemberDecreaseEvent.ActionType.KICK
+                                } else {
+                                    GroupMemberDecreaseEvent.ActionType.KICK_BOT
+                                }
+                                val event = GroupMemberDecreaseEvent(botID, ts, groupID, userID, operatorID, type)
+                                eventBus.broadcast(event)
+                            }
+
+                            "group_increase" -> {
+                                val groupID = root.getAsJsonPrimitive("group_id").asLong
+                                val userID = root.getAsJsonPrimitive("user_id").asLong
+                                val operatorID = root.getAsJsonPrimitive("operator_id").asLong
+                                val type = if (root.getAsJsonPrimitive("sub_type").asString == "approve") {
+                                    GroupMemberIncreaseEvent.ActionType.APPROVE
+                                } else {
+                                    GroupMemberIncreaseEvent.ActionType.INVITE
+                                }
+                                val event = GroupMemberIncreaseEvent(botID, ts, groupID, userID, operatorID, type)
+                                eventBus.broadcast(event)
+                            }
+
+                            "group_ban" -> {
+                                val groupID = root.getAsJsonPrimitive("group_id").asLong
+                                val userID = root.getAsJsonPrimitive("user_id").asLong
+                                val operatorID = root.getAsJsonPrimitive("operator_id").asLong
+                                val duration = root.getAsJsonPrimitive("duration").asLong
+                                val type = if (root.getAsJsonPrimitive("sub_type").asString == "ban") {
+                                    GroupMemberMuteEvent.ActionType.BAN
+                                } else {
+                                    GroupMemberMuteEvent.ActionType.PARDON
+                                }
+                                val event = GroupMemberMuteEvent(botID, ts, groupID, userID, operatorID, type, duration)
+                                eventBus.broadcast(event)
+                            }
+
+                            "friend_add" -> {
+                                val userID = root.getAsJsonPrimitive("user_id").asLong
+                                val event = FriendAddEvent(botID, ts, userID)
+                                eventBus.broadcast(event)
+                            }
+
+                            "group_recall" -> {
+                                val groupID = root.getAsJsonPrimitive("group_id").asLong
+                                val userID = root.getAsJsonPrimitive("user_id").asLong
+                                val messageID = root.getAsJsonPrimitive("message_id").asLong
+                                val operatorID = root.getAsJsonPrimitive("operator_id").asLong
+                                val event = GroupRecallEvent(botID, ts, groupID, userID, operatorID, messageID)
+                                eventBus.broadcast(event)
+                            }
+
+                            "friend_recall" -> {
+                                val userID = root.getAsJsonPrimitive("user_id").asLong
+                                val messageID = root.getAsJsonPrimitive("message_id").asLong
+                                val event = PrivateRecallEvent(botID, ts, userID, messageID)
+                                eventBus.broadcast(event)
+                            }
+
+                            "notify" -> {
+                                when (root.getAsJsonPrimitive("sub_type").asString) {
+                                    "poke" -> {
+                                        val userID = root.getAsJsonPrimitive("user_id").asLong
+                                        val groupID = root.getAsJsonPrimitive("group_id").asLong
+                                        val targetID = root.getAsJsonPrimitive("target_id").asLong
+                                        val event = GroupPokeEvent(botID, ts, groupID, userID, targetID)
+                                        eventBus.broadcast(event)
+                                    }
+                                    //TODO MORE
+                                }
+                            }
+
+                            else -> logger.debug("Unknown notice type: ${root.getAsJsonPrimitive("notice_type").asString}")
+                        }
+                    }
+
+                    "request" -> {
+                        when (root.getAsJsonPrimitive("request_type").asString) {
+                            "friend" -> {
+                                val userID = root.getAsJsonPrimitive("user_id").asLong
+                                val comment = root.getAsJsonPrimitive("comment").asString
+                                val event = FriendAddRequestEvent(botID, ts, userID, comment)
+                                eventBus.broadcast(event)
+                            }
+
+                            "group" -> {
+                                val groupID = root.getAsJsonPrimitive("group_id").asLong
+                                val userID = root.getAsJsonPrimitive("user_id").asLong
+                                val comment = root.getAsJsonPrimitive("comment").asString
+                                val type = if (root.getAsJsonPrimitive("sub_type").asString == "invite") {
+                                    GroupAddRequestEvent.ActionType.INVITE
+                                } else {
+                                    GroupAddRequestEvent.ActionType.ADD
+                                }
+                                val event = GroupAddRequestEvent(botID, ts, groupID, userID, type, comment)
+                                eventBus.broadcast(event)
+                            }
+
+                            else -> logger.debug("Unknown request type: ${root.getAsJsonPrimitive("request_type").asString}")
+                        }
+                    }
+
+                    else -> {
+                        logger.debug("Unknown post type: $post")
                     }
                 }
             } catch (t: Throwable) {

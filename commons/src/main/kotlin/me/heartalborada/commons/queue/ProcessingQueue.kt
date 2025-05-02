@@ -5,7 +5,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 
-class ProcessingQueue<K,T,E>(
+class ProcessingQueue<K, T, E>(
     private val globalCapacity: Int = 2, // 全局最大队列容量
     private val userCapacity: Int = 5 // 每个用户的最大队列容量
 ) {
@@ -22,7 +22,7 @@ class ProcessingQueue<K,T,E>(
         }
     }
 
-    suspend fun put(userId: K, task: T, extra:E): PutStatus {
+    suspend fun put(userId: K, task: T, extra: E): PutStatus {
         val userSemaphore = getSemaphoreForUser(userId, userCapacity)
 
         // 检查用户队列是否已满
@@ -64,7 +64,7 @@ class ProcessingQueue<K,T,E>(
             currentQueueSize-- // 减少队列大小计数器
         }
 
-        return Triple(userId ,task, extra)
+        return Triple(userId, task, extra)
     }
 
     /**
@@ -73,6 +73,7 @@ class ProcessingQueue<K,T,E>(
     fun getCurrentQueueSize(): Int {
         return currentQueueSize
     }
+
     enum class PutStatus {
         QUEUE_FULL,            // 全局队列已满
         USER_QUEUE_FULL,       // 用户队列已满

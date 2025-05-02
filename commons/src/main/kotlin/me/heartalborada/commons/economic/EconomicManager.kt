@@ -17,6 +17,7 @@ import kotlin.random.Random
 
 class EconomicManager(private val db: Database) {
     private val logger = LoggerFactory.getLogger(this::class.java)
+
     init {
         transaction(db) {
             addLogger(Slf4jSqlDebugLogger)
@@ -62,7 +63,7 @@ class EconomicManager(private val db: Database) {
     }
 
     fun withdrawGP(userId: ULong, amount: Long): Boolean {
-        if(amount <= 0) return false
+        if (amount <= 0) return false
         return transaction(db) {
             val user = getUserOrCreate(userId)
             if (user.balance < amount) {
@@ -84,14 +85,15 @@ class EconomicManager(private val db: Database) {
             val user = getUserOrCreate(userId)
             val start = ZonedDateTime.now(ZoneOffset.UTC).toLocalDate().atStartOfDay(ZoneOffset.UTC).toInstant()
             if (user.checkinAt.atZone(ZoneOffset.UTC)
-                .toLocalDate().plusDays(1)
-                .atStartOfDay(ZoneOffset.UTC).toInstant() > start) {
+                    .toLocalDate().plusDays(1)
+                    .atStartOfDay(ZoneOffset.UTC).toInstant() > start
+            ) {
                 return@transaction Pair(0L, false)
             }
-            val award = Random.nextInt(from,to)
+            val award = Random.nextInt(from, to)
             depositGP(userId, award.toLong())
             user.checkinAt = Clock.systemUTC().instant()
-            return@transaction Pair(award.toLong(),true)
+            return@transaction Pair(award.toLong(), true)
         }
     }
 

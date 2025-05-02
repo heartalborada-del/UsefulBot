@@ -25,7 +25,11 @@ class DownloadManager(
             .build()
     }
 
-    fun downloadFiles(urls: List<Pair<String, String?>>, destDir: File, parallelSize: Int = 4): MutableList<Pair<String, String?>> {
+    fun downloadFiles(
+        urls: List<Pair<String, String?>>,
+        destDir: File,
+        parallelSize: Int = 4
+    ): MutableList<Pair<String, String?>> {
         if (!destDir.exists()) destDir.mkdirs()
         val failedDownloads = mutableListOf<Pair<String, String?>>()
         runBlocking {
@@ -39,7 +43,13 @@ class DownloadManager(
                             url.first.substring(url.first.lastIndexOf('/') + 1)
                         }
                         val destFile = File(destDir, fileName)
-                        val downloadTask = DownloadTask(threadCount = parallelSize,url = url.first, destFile = destFile, progressFile = File(File(cacheFolder,"downloader"), "$fileName.progress"), client = okHttpClient)
+                        val downloadTask = DownloadTask(
+                            threadCount = parallelSize,
+                            url = url.first,
+                            destFile = destFile,
+                            progressFile = File(File(cacheFolder, "downloader"), "$fileName.progress"),
+                            client = okHttpClient
+                        )
                         downloadTask.download()
                     } catch (e: Exception) {
                         logger.debug("Failed to download {}", url, e)

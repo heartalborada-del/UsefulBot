@@ -26,6 +26,7 @@ class Util {
             }
             return sb.toString()
         }
+
         fun resampleImage(img: BufferedImage, scale: Double): BufferedImage {
             val newWidth = (img.width * scale).toInt()
             val newHeight = (img.height * scale).toInt()
@@ -36,6 +37,7 @@ class Util {
             g2d.dispose()
             return resized
         }
+
         fun bufferedImageToBase64(image: BufferedImage, format: String = "png"): String {
             val outputStream = ByteArrayOutputStream()
             ImageIO.write(image, format, outputStream)
@@ -43,6 +45,7 @@ class Util {
             outputStream.close()
             return Base64.getEncoder().encodeToString(imageBytes)
         }
+
         fun gaussianBlur(inputImage: BufferedImage, radius: Int): BufferedImage {
             val size = radius * 2 + 1
             val weight = 1.0f / (size * size)
@@ -64,6 +67,7 @@ class Util {
 
             return blurredImage.getSubimage(padding, padding, inputImage.width, inputImage.height)
         }
+
         fun getFileExtensionFromUrl(url: URL): String? {
             return try {
                 val path = url.path
@@ -78,6 +82,7 @@ class Util {
                 null
             }
         }
+
         fun mergeIntervals(intervals: List<Pair<Long, Long>>): List<Pair<Long, Long>> {
             if (intervals.isEmpty()) return emptyList()
             val sortedIntervals = intervals.sortedBy { it.first }
@@ -98,6 +103,7 @@ class Util {
             merged.add(Pair(currentStart, currentEnd))
             return merged
         }
+
         fun unzip(zipFile: File, destDir: File) {
             if (!destDir.exists()) {
                 destDir.mkdirs() // 创建目标目录
@@ -124,6 +130,7 @@ class Util {
                 }
             }
         }
+
         fun convertToBytes(size: String): Long {
             val regex = Regex("(\\d+(\\.\\d+)?)([a-zA-Z]+)")
             val matchResult = regex.matchEntire(size)

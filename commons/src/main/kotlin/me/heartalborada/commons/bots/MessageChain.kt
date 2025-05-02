@@ -70,17 +70,71 @@ class Rps(val result: RpsResult) : AbstractMessageObject() {
     override fun toString(): String {
         return "[Rps:$result]"
     }
+
+    enum class RpsResult(val value: Int) {
+        PAPER(1),
+        SCISSORS(2),
+        ROCK(3);
+
+        companion object {
+            fun fromValue(value: Int): RpsResult {
+                return entries.first { it.value == value }
+            }
+        }
+    }
 }
 
-enum class RpsResult(val value: Int) {
-    PAPER(1),
-    SCISSORS(2),
-    ROCK(3);
+class Poke(val id: Int, val type: Int) : AbstractMessageObject() {
+    override fun toString(): String {
+        return "[Poke:$id,$type]"
+    }
+}
 
-    companion object {
-        fun fromValue(value: Int): RpsResult {
-            return entries.first { it.value == value }
+class Contact(val type: ContactType, val id: Long) : AbstractMessageObject() {
+    override fun toString(): String {
+        return "[Contact:$type:$id]"
+    }
+
+    enum class ContactType(val value: String) {
+        QQ("qq"),
+        GROUP("group");
+
+        companion object {
+            fun fromValue(value: String): ContactType {
+                return entries.first { it.value == value }
+            }
         }
+    }
+}
+
+class Location(val latitude: String, val longitude: String, val title: String?, val content: String?) :
+    AbstractMessageObject() {
+    override fun toString(): String {
+        return "[Location:$latitude,$longitude]"
+    }
+}
+
+class Xml(val data: String) : AbstractMessageObject() {
+    override fun toString(): String {
+        return "[Xml:$data]"
+    }
+}
+
+class Json(val data: String) : AbstractMessageObject() {
+    override fun toString(): String {
+        return "[Json:$data]"
+    }
+}
+
+class Share(val title: String, val url: String, val content: String?, val imageUrl: String?) : AbstractMessageObject() {
+    override fun toString(): String {
+        return "[Share:$url]"
+    }
+}
+
+class Unknown(val raw: String) : AbstractMessageObject() {
+    override fun toString(): String {
+        return "[Unknown:$raw]"
     }
 }
 //TODO add more message objects

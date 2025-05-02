@@ -6,7 +6,7 @@ import org.jetbrains.exposed.sql.Column
 import org.jetbrains.exposed.sql.javatime.timestamp
 import java.time.Instant
 
-object GPRecordsTable: IdTable<ULong>("records") {
+object GPRecordsTable : IdTable<ULong>("records") {
     override val id: Column<EntityID<ULong>> = ulong("id").autoIncrement().entityId()
     val userId = ulong("user_id").references(UsersTable.id)
     val createdAt = timestamp("created_at").default(Instant.now())

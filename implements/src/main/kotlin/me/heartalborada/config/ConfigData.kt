@@ -15,11 +15,13 @@ data class ConfigData @JvmOverloads constructor(
         @SerializedName("isCommandStartWithAt") val isCommandStartWithAt: Boolean = false,
         @SerializedName("fileRelativePath") val fileRelativePath: String? = null
     )
+
     data class Proxy @JvmOverloads constructor(
         @SerializedName("type") val type: java.net.Proxy.Type = java.net.Proxy.Type.DIRECT,
         @SerializedName("address") val address: String = "127.0.0.1",
         @SerializedName("port") val port: Int = 1080,
     )
+
     data class EHentai @JvmOverloads constructor(
         @SerializedName("ipb_member_id") val ipbMemberId: String = "",
         @SerializedName("ipb_pass_hash") val ipbPassHash: String = "",

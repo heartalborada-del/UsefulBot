@@ -14,7 +14,7 @@ class RetryInterceptor(
     private val delay: Duration = 200.milliseconds,
     private val delay429: Duration = 500.milliseconds,
     private val maxRetries: Int = 3,
-    private vararg val waitHosts:String
+    private vararg val waitHosts: String
 ) : Interceptor {
     private val logger: Logger = LoggerFactory.getLogger(this::class.java)
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -43,7 +43,7 @@ class RetryInterceptor(
                 retryCount.addAndGet(1)
                 Thread.sleep(delay.toLong(DurationUnit.MILLISECONDS))
             } finally {
-                if(retryCount.get() != 0)
+                if (retryCount.get() != 0)
                     logger.debug("Retrying url: [{}]{}, Count: {}", request.method, request.url, retryCount)
             }
         }

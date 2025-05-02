@@ -1,4 +1,6 @@
-package me.heartalborada.commons.bots.events
+package me.heartalborada.commons.bots.events.meta
+
+import me.heartalborada.commons.bots.events.AbstractEvent
 
 data class HeartBeatEvent(
     val online: Boolean,

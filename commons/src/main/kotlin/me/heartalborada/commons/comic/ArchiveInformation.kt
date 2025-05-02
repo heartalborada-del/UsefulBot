@@ -1,6 +1,6 @@
 package me.heartalborada.commons.comic
 
-data class ArchiveInformation (
+data class ArchiveInformation(
     val name: String,
     val size: String = "",
     val cost: String = "",

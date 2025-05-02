@@ -1,9 +1,7 @@
 import com.google.common.cache.CacheBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
 import me.heartalborada.QueueExtraData
 import me.heartalborada.bots.napcat.Napcat
 import me.heartalborada.comics.EHentai
@@ -53,7 +51,8 @@ private val economic = EconomicManager(Database.connect("jdbc:h2:./data/gp", "or
 private lateinit var client: OkHttpClient
 private lateinit var eh: EHentai
 
-private val queue = ProcessingQueue<Long, Pair<String, String>, QueueExtraData>(globalCapacity = config.getConfig().comicParallelCount)
+private val queue =
+    ProcessingQueue<Long, Pair<String, String>, QueueExtraData>(globalCapacity = config.getConfig().comicParallelCount)
 
 fun main() = runBlocking {
     fun queueProcess(gallery: Pair<String, String>, sender: MessageSender, messageID: Long, bot: AbstractBot) {

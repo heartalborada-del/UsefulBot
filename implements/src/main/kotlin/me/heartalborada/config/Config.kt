@@ -13,10 +13,12 @@ class Config(private val configFile: File) : AbstractConfiguration<ConfigData>()
     private var config: ConfigData = ConfigData()
     private val gson = GsonBuilder().setPrettyPrinting().serializeNulls().create()
     private val logger = LoggerFactory.getLogger(this::class.java)
+
     init {
         this.load()
     }
-    @Throws(JsonSyntaxException::class, IOException::class,ClassNotFoundException::class)
+
+    @Throws(JsonSyntaxException::class, IOException::class, ClassNotFoundException::class)
     override fun load() {
         if (!configFile.exists()) {
             logger.debug("Config file does not exist: ${configFile.absolutePath}")
@@ -26,11 +28,12 @@ class Config(private val configFile: File) : AbstractConfiguration<ConfigData>()
         }
         val s = FileUtils.readFileToString(configFile, Charset.defaultCharset())
         try {
-            config = gson.fromJson(s,ConfigData::class.java)
+            config = gson.fromJson(s, ConfigData::class.java)
         } catch (_: Exception) {
             save()
         }
     }
+
     @Throws(IOException::class)
     override fun save() {
         logger.debug("Saving Config File...")

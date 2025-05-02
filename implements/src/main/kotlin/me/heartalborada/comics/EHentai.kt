@@ -112,10 +112,10 @@ class EHentai(
                     val b = FormBody.Builder()
                     if (type.name == ArchiveType.ORIGINAL.name) {
                         b.add("dltype", "org")
-                        b.add("dlcheck","Download+Original+Archive")
+                        b.add("dlcheck", "Download+Original+Archive")
                     } else {
                         b.add("dltype", "res")
-                        b.add("dlcheck","Download+Resample+Archive")
+                        b.add("dlcheck", "Download+Resample+Archive")
                     }
                     b.build()
                 }
@@ -137,20 +137,23 @@ class EHentai(
         okHttpClient.newCall(Request.Builder().url(getArchiveUrl(target)).build())
             .execute().use { resp ->
                 val document = resp.documentPrecheck()
-                document.select("#db").first()?.child(if (isEx) 1 else 3)?.children()?.select(":has(form)")?.forEach { it ->
-                    val type = if (it.select("input[name=dltype]").attr("value") == "res") {
-                        ArchiveType.RESAMPLE
-                    } else {
-                        ArchiveType.ORIGINAL
+                document.select("#db").first()?.child(if (isEx) 1 else 3)?.children()?.select(":has(form)")
+                    ?.forEach { it ->
+                        val type = if (it.select("input[name=dltype]").attr("value") == "res") {
+                            ArchiveType.RESAMPLE
+                        } else {
+                            ArchiveType.ORIGINAL
+                        }
+                        val size = it.select("p>strong").text()
+                        val cost = it.select("div>strong").text()
+                        info.add(
+                            ArchiveInformation(
+                                name = type.name,
+                                size = size,
+                                cost = cost
+                            )
+                        )
                     }
-                    val size = it.select("p>strong").text()
-                    val cost = it.select("div>strong").text()
-                    info.add(ArchiveInformation(
-                        name = type.name,
-                        size = size,
-                        cost = cost
-                    ))
-                }
             }
         return info.toTypedArray()
     }
@@ -249,7 +252,7 @@ class EHentai(
                 extra = variables
             )
             infoCache.put(target, info)
-            logger.debug("Resolved information: {}",info.toString())
+            logger.debug("Resolved information: {}", info.toString())
             return info
         }
     }
@@ -275,7 +278,7 @@ class EHentai(
                             result[p] = its.groupValues[2]
                         }
                     }
-            }
+                }
             page++
         }
         return result

@@ -5,8 +5,8 @@ import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.beans.FileInfo
 import me.heartalborada.commons.bots.beans.MessageSender
 import me.heartalborada.commons.bots.events.EventBus
-import me.heartalborada.commons.bots.events.GroupMessageEvent
-import me.heartalborada.commons.bots.events.PrivateMessageEvent
+import me.heartalborada.commons.bots.events.message.GroupMessageEvent
+import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
 import me.heartalborada.commons.commands.CommandExecutor
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
@@ -21,7 +21,8 @@ abstract class AbstractBot(
     private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
         logger.error("An unexpected error occurred.", throwable)
     }
-    private val commonScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + exceptionHandler + CoroutineName("BotExecutorScope"))
+    private val commonScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.IO + exceptionHandler + CoroutineName("BotExecutorScope"))
 
     private val commandMap = mutableMapOf<String, CommandExecutor>()
     private var isRegistered: Boolean = false
@@ -113,11 +114,17 @@ abstract class AbstractBot(
             val copy = MessageChain()
             copy.addAll(it.message.toMutableList())
             if (isStartWithAtBot) copy.removeAt(0)
-            commandParser(MessageSender(it.groupID, it.sender, ChatType.GROUP), copy, operator, divider,it.messageID)
+            commandParser(MessageSender(it.groupID, it.sender, ChatType.GROUP), copy, operator, divider, it.messageID)
         }
         this.getEventBus().register(PrivateMessageEvent::class.java) {
             logger.info("[Receive] {} <- [PRIVATE] [{}] {}", it.botID, it.sender.userID, it.message.toString())
-            commandParser(MessageSender(it.sender.userID, it.sender, ChatType.PRIVATE), it.message, operator, divider,it.messageID)
+            commandParser(
+                MessageSender(it.sender.userID, it.sender, ChatType.PRIVATE),
+                it.message,
+                operator,
+                divider,
+                it.messageID
+            )
         }
         isRegistered = true
     }
