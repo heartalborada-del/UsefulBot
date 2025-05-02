@@ -12,6 +12,7 @@ import me.heartalborada.commons.bots.beans.MessageSender
 import me.heartalborada.commons.comic.ArchiveInformation
 import me.heartalborada.commons.comic.PDFGenerator
 import me.heartalborada.commons.commands.CommandExecutor
+import me.heartalborada.commons.comparator.NaturalFileNameComparator
 import me.heartalborada.commons.downloader.DownloadManager
 import me.heartalborada.commons.economic.EconomicManager
 import me.heartalborada.commons.okhttp.CookieStorageProvider
@@ -114,7 +115,7 @@ fun main() = runBlocking {
         }
         val archiveUrl = eh.getArchiveDownloadUrl(gallery, ArchiveInformation("RESAMPLE"))
         var count = 0
-        var list = mutableListOf<Pair<String, String?>>(Pair(archiveUrl, "${gallery.first}-${gallery.second}"))
+        var list = mutableListOf<Pair<String, String?>>(Pair(archiveUrl, "${gallery.first}-${gallery.second}.zip"))
         while (list.isNotEmpty()) {
             if (count >= 3) {
                 bot.sendMessage(sender.type, sender.target, MessageChain().also {
@@ -126,18 +127,16 @@ fun main() = runBlocking {
             count++
             list = downloader.downloadFiles(list, archiveFolder, 4)
         }
-        Util.unzip(File(archiveFolder, "${gallery.first}-${gallery.second}"), cf)
+        Util.unzip(File(archiveFolder, "${gallery.first}-${gallery.second}.zip"), cf)
         pdfFolder.mkdirs()
+        val comparator = NaturalFileNameComparator()
         cf.listFiles { it ->
             ALLOW_SUFFIX.contains(
                 Util.getFileExtensionFromUrl(
                     it.toURI().toURL()
                 )
-            ) && it.name.split(".")[0] != "cover" && it.isFile && it.name.matches(Regex("^\\d+_.*"))
-        }?.sortedBy { file ->
-            val numberPart = file.name.substringBefore("_").toIntOrNull() ?: Int.MAX_VALUE
-            numberPart
-        }?.let {
+            ) && it.name.split(".")[0] != "cover" && it.isFile
+        }?.sortedWith(comparator)?.let {
             PDFGenerator.generatePDF(
                 it,
                 pdfFile = p, tempDir = File(tempFolder, "pdf"),
