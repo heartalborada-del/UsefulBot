@@ -1,11 +1,14 @@
 import com.google.common.cache.CacheBuilder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import me.heartalborada.QueueExtraData
 import me.heartalborada.bots.napcat.Napcat
 import me.heartalborada.comics.EHentai
 import me.heartalborada.commons.Util
-import me.heartalborada.commons.bots.Image
-import me.heartalborada.commons.bots.MessageChain
-import me.heartalborada.commons.bots.PlainText
-import me.heartalborada.commons.bots.Reply
+import me.heartalborada.commons.bots.*
 import me.heartalborada.commons.bots.beans.FileInfo
 import me.heartalborada.commons.bots.beans.MessageSender
 import me.heartalborada.commons.comic.ArchiveInformation
@@ -14,6 +17,8 @@ import me.heartalborada.commons.commands.CommandExecutor
 import me.heartalborada.commons.downloader.DownloadManager
 import me.heartalborada.commons.economic.EconomicManager
 import me.heartalborada.commons.okhttp.CookieStorageProvider
+import me.heartalborada.commons.queue.ProcessingQueue
+import me.heartalborada.config.Config
 import okhttp3.Cookie
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
@@ -42,13 +47,119 @@ private val archiveFolder = File(dataFolder, "archive")
 private val logger = LoggerFactory.getLogger("Main")
 private val ALLOW_SUFFIX = setOf("jpg", "jpeg", "gif", "png", "webp")
 
-private val config = MainConfig(File(dataFolder, "config.json"))
+private val config = Config(File(dataFolder, "config.json"))
 
 private val economic = EconomicManager(Database.connect("jdbc:h2:./data/gp", "org.h2.Driver"))
 private lateinit var client: OkHttpClient
 private lateinit var eh: EHentai
 
-fun main() {
+private val queue = ProcessingQueue<Long, Pair<String, String>, QueueExtraData>(globalCapacity = config.getConfig().comicParallelCount)
+
+fun main() = runBlocking {
+    fun queueProcess(gallery: Pair<String, String>, sender: MessageSender, messageID: Long, bot: AbstractBot) {
+        val p = File(pdfFolder, "${gallery.first}-${gallery.second}.pdf")
+        val cf = File(imgFolder, "${gallery.first}-${gallery.second}")
+        if (!cf.isDirectory || !cf.exists()) {
+            cf.delete()
+            cf.mkdirs()
+        }
+        val info = eh.getTargetInformation(gallery)
+        val downloader = DownloadManager(16, client, File(tempFolder, "okhttp"))
+        val cover = "cover.${Util.getFileExtensionFromUrl(URL(info.cover))}"
+        downloader.downloadFiles(listOf(Pair(info.cover, cover)), cf, 2)
+        val image = ImageIO.read(File(cf, cover))
+        val blurred = Util.gaussianBlur(Util.resampleImage(Util.resampleImage(image, 0.125), 8.0), radius = 10)
+        val base64 = Util.bufferedImageToBase64(blurred)
+        val message = MessageChain().also {
+            it.add(Reply(messageID))
+            if (info.subtitle != null) it.add(PlainText("Title: ${info.title} - ${info.subtitle}\n"))
+            else it.add(PlainText("Title: ${info.title}\n"))
+            it.add(PlainText("Uploader: ${info.uploader}\n"))
+            it.add(PlainText("Rating: ${info.rating}\n"))
+            it.add(PlainText("Pages: ${info.pages}p\n"))
+            it.add(PlainText("Type: ${info.category.s}"))
+            it.add(Image(FileInfo("${info.title}.jpg", url = "base64://$base64")))
+        }
+        bot.sendMessage(sender.type, sender.target, message)
+        if (pdfCache.getIfPresent(gallery) == true || p.exists()) {
+            bot.sendMessage(sender.type, sender.target, MessageChain().also {
+                it.add(PlainText("Hit the cache, no cost!"))
+            })
+            bot.sendFile(
+                sender.type,
+                sender.target,
+                FileInfo(
+                    "${gallery.first}-${gallery.second}.pdf",
+                    url = "file://${config.getConfig().bot.fileRelativePath}/${p.toRelativeString(pdfFolder)}"
+                )
+            )
+            return
+        }
+        eh.getArchiveInformation(gallery).forEach { it ->
+            if (it.name == "RESAMPLE") {
+                val cost =
+                    kotlin.math.ceil(Util.convertToBytes(it.size.replace(" ", "")).toDouble() / 1024 / 1024).toLong()
+                if (!economic.withdrawGP(sender.user.userID.toULong(), cost)) {
+                    bot.sendMessage(sender.type, sender.target, MessageChain().also {
+                        it.add(Reply(messageID))
+                        it.add(PlainText("Not enough GP. Please check your balance!"))
+                    })
+                    return
+                } else {
+                    bot.sendMessage(sender.type, sender.target, MessageChain().also {
+                        it.add(Reply(messageID))
+                        it.add(PlainText("Cost: $cost GP, remaining: ${economic.getUser(sender.user.userID.toULong()).balance} GP. Preparing PDF..."))
+                    })
+                }
+            }
+        }
+        val archiveUrl = eh.getArchiveDownloadUrl(gallery, ArchiveInformation("RESAMPLE"))
+        var count = 0
+        var list = mutableListOf<Pair<String, String?>>(Pair(archiveUrl, "${gallery.first}-${gallery.second}"))
+        while (list.isNotEmpty()) {
+            if (count >= 3) {
+                bot.sendMessage(sender.type, sender.target, MessageChain().also {
+                    it.add(Reply(messageID))
+                    it.add(PlainText("Error: Download failed, please contact the admin!"))
+                })
+                return
+            }
+            count++
+            list = downloader.downloadFiles(list, archiveFolder, 4)
+        }
+        Util.unzip(File(archiveFolder, "${gallery.first}-${gallery.second}"), cf)
+        pdfFolder.mkdirs()
+        cf.listFiles { it ->
+            ALLOW_SUFFIX.contains(
+                Util.getFileExtensionFromUrl(
+                    it.toURI().toURL()
+                )
+            ) && it.name.split(".")[0] != "cover" && it.isFile && it.name.matches(Regex("^\\d+_.*"))
+        }?.sortedBy { file ->
+            val numberPart = file.name.substringBefore("_").toIntOrNull() ?: Int.MAX_VALUE
+            numberPart
+        }?.let {
+            PDFGenerator.generatePDF(
+                it,
+                pdfFile = p, tempDir = File(tempFolder, "pdf"),
+                password = "${gallery.first}-${gallery.second}",
+                signatureText = "Generated at:${
+                    Instant.now().atZone(ZoneOffset.UTC)
+                        .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ssZZZZZ"))
+                }"
+            )
+        }
+        bot.sendFile(
+            sender.type,
+            sender.target,
+            FileInfo(
+                "${gallery.first}-${gallery.second}.pdf",
+                url = "file://${config.getConfig().bot.fileRelativePath}/${p.toRelativeString(pdfFolder)}"
+            )
+        )
+        pdfCache.put(gallery, true)
+    }
+
     logger.info("Initializing...")
     val cookieJar = CookieStorageProvider()
     val ck = mutableListOf<Cookie>().let {
@@ -81,7 +192,12 @@ fun main() {
                 )
             ).build()
     }
-    eh = EHentai(parentClient = client, cacheFolder = File(tempFolder,"okhttp"), isEx = config.getConfig().eHentai.isExHentai, cookieStorage = cookieJar)
+    eh = EHentai(
+        parentClient = client,
+        cacheFolder = File(tempFolder, "okhttp"),
+        isEx = config.getConfig().eHentai.isExHentai,
+        cookieStorage = cookieJar
+    )
     logger.info("Connecting...")
     val bot = Napcat(
         config.getConfig().bot.websocketUrl,
@@ -108,7 +224,7 @@ fun main() {
     bot.registerCommand(commands = arrayOf("eh"), executor = object : CommandExecutor {
         override suspend fun execute(sender: MessageSender, command: String, args: MessageChain, messageID: Long) {
             val (amount, success) = economic.userCheckIn(sender.user.userID.toULong())
-            if(success)
+            if (success)
                 bot.sendMessage(sender.type, sender.target, MessageChain().also {
                     it.add(Reply(messageID))
                     it.add(PlainText("Auto check in successful! You have gained $amount GP."))
@@ -123,115 +239,24 @@ fun main() {
                 })
                 return
             }
-            val p = File(pdfFolder, "${u.first}-${u.second}.pdf")
-            val cf = File(imgFolder, "${u.first}-${u.second}")
-            cf.mkdirs()
-            bot.sendMessage(sender.type, sender.target, MessageChain().also {
+            val res = queue.put(sender.user.userID, u, QueueExtraData(messageID, sender))
+            MessageChain().also {
                 it.add(Reply(messageID))
-                it.add(PlainText("Processing... Sit back and relax."))
-            })
-            try {
-                val info = eh.getTargetInformation(u)
-                val downloader = DownloadManager(16, client, File(tempFolder,"okhttp"))
-                val cover = "cover.${Util.getFileExtensionFromUrl(URL(info.cover))}"
-                downloader.downloadFiles(listOf(Pair(info.cover, cover)), cf, 2)
-                val image = ImageIO.read(File(cf, cover))
-                val blurred = Util.gaussianBlur(Util.resampleImage(Util.resampleImage(image, 0.125), 8.0), radius = 10)
-                val base64 = Util.bufferedImageToBase64(blurred)
-                val message = MessageChain().also {
-                    it.add(Reply(messageID))
-                    if (info.subtitle != null) it.add(PlainText("Title: ${info.title} - ${info.subtitle}\n"))
-                    else it.add(PlainText("Title: ${info.title}\n"))
-                    it.add(PlainText("Uploader: ${info.uploader}\n"))
-                    it.add(PlainText("Rating: ${info.rating}\n"))
-                    it.add(PlainText("Pages: ${info.pages}p\n"))
-                    it.add(PlainText("Type: ${info.category.s}"))
-                    it.add(Image(FileInfo("${info.title}.jpg", url = "base64://$base64")))
+                val m = when (res) {
+                    ProcessingQueue.PutStatus.QUEUE_FULL -> "You're queued at ${queue.getCurrentQueueSize()}. Sit back and relax."
+                    ProcessingQueue.PutStatus.USER_QUEUE_FULL -> "User process queue is full. Skip."
+                    ProcessingQueue.PutStatus.DUPLICATE_TASK -> "Another using same gallery task already in progress. Sit back and relax."
+                    ProcessingQueue.PutStatus.SUCCESS -> "Task added to queue. Sit back and relax."
+                    ProcessingQueue.PutStatus.FAILURE -> "Failed to add task to queue. Please contact the admin."
                 }
-                bot.sendMessage(sender.type, sender.target, message)
-                if (pdfCache.getIfPresent(u) == true || p.exists()) {
-                    bot.sendMessage(sender.type, sender.target, MessageChain().also {
-                        it.add(PlainText("Hit the cache, no cost!"))
-                    })
-                    bot.sendFile(
-                        sender.type,
-                        sender.target,
-                        FileInfo(
-                            "${u.first}-${u.second}.pdf",
-                            url = "file://${config.getConfig().bot.fileRelativePath}/${p.toRelativeString(pdfFolder)}"
-                        )
-                    )
-                    return
-                }
-                eh.getArchiveInformation(u).forEach { it ->
-                    if(it.name == "RESAMPLE") {
-                        val cost = kotlin.math.ceil(Util.convertToBytes(it.size.replace(" ","")).toDouble() / 1024 / 1024).toLong()
-                        if(!economic.withdrawGP(sender.user.userID.toULong(),cost)) {
-                            bot.sendMessage(sender.type, sender.target, MessageChain().also {
-                                it.add(PlainText("Not enough GP. Please check your balance!"))
-                            })
-                            return
-                        } else {
-                            bot.sendMessage(sender.type, sender.target, MessageChain().also {
-                                it.add(PlainText("Cost: $cost GP, remaining: ${economic.getUser(sender.user.userID.toULong()).balance} GP. Preparing PDF..."))
-                            })
-                        }
-                    }
-                }
-                val archiveUrl = eh.getArchiveDownloadUrl(u, ArchiveInformation("RESAMPLE"))
-                var count = 0
-                var list = mutableListOf<Pair<String, String?>>(Pair(archiveUrl, "${u.first}-${u.second}"))
-                while (list.isNotEmpty()) {
-                    if (count >= 3) {
-                        bot.sendMessage(sender.type, sender.target, MessageChain().also {
-                            it.add(PlainText("Error: Download failed, please contact the admin!"))
-                        })
-                        return
-                    }
-                    count++
-                    list = downloader.downloadFiles(list, archiveFolder,4)
-                }
-                Util.unzip(File(archiveFolder,"${u.first}-${u.second}"), cf)
-                pdfFolder.mkdirs()
-                cf.listFiles { it ->
-                    ALLOW_SUFFIX.contains(
-                        Util.getFileExtensionFromUrl(
-                            it.toURI().toURL()
-                        )
-                    ) && it.name.split(".")[0] != "cover" && it.isFile && it.name.matches(Regex("^\\d+_.*"))
-                }?.sortedBy { file ->
-                    val numberPart = file.name.substringBefore("_").toIntOrNull() ?: Int.MAX_VALUE
-                    numberPart
-                }?.let {
-                    PDFGenerator.generatePDF(
-                        it,
-                        pdfFile = p, tempDir = File(tempFolder,"pdf"),
-                        password = "${u.first}-${u.second}",
-                        signatureText = "Generated at:${
-                            Instant.now().atZone(ZoneOffset.UTC)
-                                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ssZZZZZ"))
-                        }"
-                    )
-                }
-                bot.sendFile(
-                    sender.type,
-                    sender.target,
-                    FileInfo(
-                        "${u.first}-${u.second}.pdf",
-                        url = "file://${config.getConfig().bot.fileRelativePath}/${p.toRelativeString(pdfFolder)}"
-                    )
-                )
-                pdfCache.put(u, true)
-            } catch (e: Exception) {
-                logger.error("An unexpected error occurred.", e)
-                bot.sendMessage(sender.type, sender.target, MessageChain().also {
-                    it.add(PlainText("Error: ${e.javaClass.packageName}.${e.javaClass.name}: ${e.message}, please contact the admin!"))
-                })
+                it.add(PlainText(m))
+            }.let {
+                bot.sendMessage(sender.type, sender.target, it)
             }
         }
     })
 
-    bot.registerCommand(commands= arrayOf("checkin"), executor = object : CommandExecutor {
+    bot.registerCommand(commands = arrayOf("checkin"), executor = object : CommandExecutor {
         override suspend fun execute(
             sender: MessageSender,
             command: String,
@@ -254,7 +279,7 @@ fun main() {
         }
     })
 
-    bot.registerCommand(commands= arrayOf("info"), executor = object : CommandExecutor {
+    bot.registerCommand(commands = arrayOf("info"), executor = object : CommandExecutor {
         override suspend fun execute(
             sender: MessageSender,
             command: String,
@@ -266,8 +291,35 @@ fun main() {
                 it.add(Reply(messageID))
                 it.add(PlainText("Role: ${u.role.name}\n"))
                 it.add(PlainText("Balance: ${u.balance} GP\n"))
-                it.add(PlainText("Last Checkin time: ${u.checkinAt.atZone(ZoneOffset.UTC).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ssZ"))}"))
+                it.add(
+                    PlainText(
+                        "Last Checkin time: ${
+                            u.checkinAt.atZone(ZoneOffset.UTC)
+                                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ssZ"))
+                        }"
+                    )
+                )
             })
         }
     })
+
+    for (i in 1..config.getConfig().comicParallelCount) {
+        async(Dispatchers.IO) {
+            while (true) {
+                if (queue.getCurrentQueueSize() < 0) continue
+                val (_, u, extra) = queue.take()
+                try {
+                    queueProcess(u, extra.sender, extra.messageID, bot)
+                } catch (e: Exception) {
+                    logger.error("An unexpected error occurred.", e)
+                    bot.sendMessage(extra.sender.type, extra.sender.target, MessageChain().also {
+                        it.add(PlainText("Error: ${e.javaClass.packageName}.${e.javaClass.name}: ${e.message}, please contact the admin!"))
+                    })
+                }
+            }
+        }
+    }
 }
+
+
+
