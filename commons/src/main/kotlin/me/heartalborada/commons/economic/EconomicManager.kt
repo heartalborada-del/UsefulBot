@@ -11,8 +11,8 @@ import org.jetbrains.exposed.sql.addLogger
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.slf4j.LoggerFactory
 import java.time.Clock
-import java.time.LocalDate
 import java.time.ZoneOffset
+import java.time.ZonedDateTime
 import kotlin.random.Random
 
 class EconomicManager(private val db: Database) {
@@ -82,8 +82,10 @@ class EconomicManager(private val db: Database) {
     fun userCheckIn(userId: ULong, from: Int = 50, to: Int = 100): Pair<Long, Boolean> {
         return transaction(db) {
             val user = getUserOrCreate(userId)
-            val start = LocalDate.now().atStartOfDay(ZoneOffset.UTC).toInstant()
-            if (user.checkinAt > start) {
+            val start = ZonedDateTime.now(ZoneOffset.UTC).toLocalDate().atStartOfDay(ZoneOffset.UTC).toInstant()
+            if (user.checkinAt.atZone(ZoneOffset.UTC)
+                .toLocalDate().plusDays(1)
+                .atStartOfDay(ZoneOffset.UTC).toInstant() > start) {
                 return@transaction Pair(0L, false)
             }
             val award = Random.nextInt(from,to)
