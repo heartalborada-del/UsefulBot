@@ -7,9 +7,9 @@ import me.heartalborada.bots.napcat.Napcat
 import me.heartalborada.comics.EHentai
 import me.heartalborada.commons.Util
 import me.heartalborada.commons.bots.*
-import me.heartalborada.commons.bots.beans.FileInfo
-import me.heartalborada.commons.bots.beans.MessageSender
-import me.heartalborada.commons.comic.ArchiveInformation
+import me.heartalborada.commons.bots.dto.FileInfo
+import me.heartalborada.commons.bots.dto.MessageSender
+import me.heartalborada.commons.comic.model.ArchiveInformation
 import me.heartalborada.commons.comic.PDFGenerator
 import me.heartalborada.commons.commands.CommandExecutor
 import me.heartalborada.commons.comparator.NaturalFileNameComparator
@@ -37,6 +37,7 @@ private val pdfCache = CacheBuilder.newBuilder()
     .maximumSize(1024)
     .build<Pair<String, String>, Boolean>()
 
+private val rootFolder = File(".")
 private val dataFolder = File("data")
 private val tempFolder = File(dataFolder, "temp")
 private val pdfFolder = File(dataFolder, "pdf")
@@ -46,7 +47,7 @@ private val archiveFolder = File(dataFolder, "archive")
 private val logger = LoggerFactory.getLogger("Main")
 private val ALLOW_SUFFIX = setOf("jpg", "jpeg", "gif", "png", "webp")
 
-private val config = Config(File(dataFolder, "config.json"))
+private val config = Config(File(rootFolder, "config.json"))
 
 private val economic = EconomicManager(Database.connect("jdbc:h2:./data/gp", "org.h2.Driver"))
 private lateinit var client: OkHttpClient
@@ -88,10 +89,8 @@ fun main() = runBlocking {
             bot.sendFile(
                 sender.type,
                 sender.target,
-                FileInfo(
-                    "${gallery.first}-${gallery.second}.pdf",
-                    url = "file://${config.getConfig().bot.fileRelativePath}/${p.toRelativeString(pdfFolder)}"
-                )
+                "${gallery.first}-${gallery.second}.pdf",
+                File(pdfFolder, "${gallery.first}-${gallery.second}.pdf")
             )
             return
         }
@@ -150,10 +149,8 @@ fun main() = runBlocking {
         bot.sendFile(
             sender.type,
             sender.target,
-            FileInfo(
-                "${gallery.first}-${gallery.second}.pdf",
-                url = "file://${config.getConfig().bot.fileRelativePath}/${p.toRelativeString(pdfFolder)}"
-            )
+            "${gallery.first}-${gallery.second}.pdf",
+            File(pdfFolder, "${gallery.first}-${gallery.second}.pdf")
         )
         pdfCache.put(gallery, true)
     }
@@ -172,6 +169,12 @@ fun main() = runBlocking {
         it.add(
             Cookie.Builder().name("igneous").domain("e-hentai.org").value(config.getConfig().eHentai.igneous).path("/")
                 .build()
+        )
+        it.add(
+            Cookie.Builder().name("star").domain("e-hentai.org").value(config.getConfig().eHentai.star).path("/").build()
+        )
+        it.add(
+            Cookie.Builder().name("sk").domain("e-hentai.org").value(config.getConfig().eHentai.sk).path("/").build()
         )
         it
     }
@@ -196,15 +199,19 @@ fun main() = runBlocking {
         isEx = config.getConfig().eHentai.isExHentai,
         cookieStorage = cookieJar
     )
+
     logger.info("Connecting...")
     val bot = Napcat(
         config.getConfig().bot.websocketUrl,
         config.getConfig().bot.token,
         config.getConfig().bot.isCommandStartWithAt,
         commandOperator = config.getConfig().bot.commandOperator,
+        useStreamAPI = config.getConfig().bot.fileUpload.useStreamAPI,
+        streamAPIChunkSize = config.getConfig().bot.fileUpload.chunkSize,
+        streamAPIExpireSeconds = config.getConfig().bot.fileUpload.expireSeconds
     )
 
-    bot.registerCommand(commands = arrayOf("about"), executor = object : CommandExecutor {
+    bot.registerCommand(commands = arrayOf("about"), usage = "Show bot info.", executor = object : CommandExecutor {
         override suspend fun execute(sender: MessageSender, command: String, args: MessageChain, messageID: Long) {
             bot.sendMessage(sender.type, sender.target, MessageChain().also {
                 it.add(
@@ -219,7 +226,7 @@ fun main() = runBlocking {
         }
     })
 
-    bot.registerCommand(commands = arrayOf("eh"), executor = object : CommandExecutor {
+    bot.registerCommand(commands = arrayOf("eh"), usage = "Parse E-hentai Gallery.", executor = object : CommandExecutor {
         override suspend fun execute(sender: MessageSender, command: String, args: MessageChain, messageID: Long) {
             val (amount, success) = economic.userCheckIn(sender.user.userID.toULong())
             if (success)
@@ -254,7 +261,7 @@ fun main() = runBlocking {
         }
     })
 
-    bot.registerCommand(commands = arrayOf("checkin"), executor = object : CommandExecutor {
+    bot.registerCommand(commands = arrayOf("checkin"), usage = "Daily check-in to gain GP.", executor = object : CommandExecutor {
         override suspend fun execute(
             sender: MessageSender,
             command: String,
@@ -277,7 +284,7 @@ fun main() = runBlocking {
         }
     })
 
-    bot.registerCommand(commands = arrayOf("info"), executor = object : CommandExecutor {
+    bot.registerCommand(commands = arrayOf("info"), usage = "Show user account info.", executor = object : CommandExecutor {
         override suspend fun execute(
             sender: MessageSender,
             command: String,

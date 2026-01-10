@@ -2,18 +2,19 @@ package me.heartalborada.commons.bots
 
 import kotlinx.coroutines.*
 import me.heartalborada.commons.ChatType
-import me.heartalborada.commons.bots.beans.FileInfo
-import me.heartalborada.commons.bots.beans.MessageSender
+import me.heartalborada.commons.bots.dto.FileInfo
+import me.heartalborada.commons.bots.dto.MessageSender
 import me.heartalborada.commons.bots.events.EventBus
 import me.heartalborada.commons.bots.events.message.GroupMessageEvent
 import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
 import me.heartalborada.commons.commands.CommandExecutor
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import java.io.File
 import java.util.*
 
 abstract class AbstractBot(
-    private val isCommandStartWithAt: Boolean = true,
+    private val commandStartWithAt: Boolean = true,
     private val commandOperator: Char = '/',
     private val commandDivider: Char = ' '
 ) {
@@ -24,7 +25,7 @@ abstract class AbstractBot(
     private val commonScope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.IO + exceptionHandler + CoroutineName("BotExecutorScope"))
 
-    private val commandMap = mutableMapOf<String, CommandExecutor>()
+    private val commandMap = mutableMapOf<String, Pair<CommandExecutor, String>>()
     private var isRegistered: Boolean = false
 
     init {
@@ -42,14 +43,15 @@ abstract class AbstractBot(
                         sender.target,
                         MessageChain().also {
                             val builder = StringBuilder("Commands: \n")
-                            commandMap.forEach { (key) ->
-                                builder.append("  $commandOperator$key\n")
+                            commandMap.forEach { (key,value) ->
+                                builder.append("  $commandOperator$key: ${value.second}\n")
                             }
                             it.add(PlainText(builder.toString().trimIndent()))
                         }
                     )
                 }
-            }
+            },
+            usage = "Show all available commands."
         )
     }
 
@@ -63,7 +65,7 @@ abstract class AbstractBot(
         if (!isRegistered)
             registerCommandEvent(
                 operator = commandOperator,
-                isStartWithAtBot = isCommandStartWithAt,
+                isStartWithAtBot = commandStartWithAt,
                 divider = commandDivider
             )
         return true
@@ -75,16 +77,30 @@ abstract class AbstractBot(
 
     abstract fun recallMessage(messageID: Long): Boolean
 
-    abstract fun sendFile(type: ChatType, id: Long, fileInfo: FileInfo): Long
+    /**
+     * @param type ChatType
+     * @param target Long
+     * @param url <bold>base64</bold> or <bold>local file relative path</bold> with scheme
+     * @throws IllegalArgumentException when uploadActionType is STREAMAPI
+     * @author heartalborada-del
+     */
+    abstract fun sendFile(type: ChatType, target: Long, name: String, url: String): Boolean
+
+    /**
+     * @param type ChatType
+     * @param target Long
+     * @param file File
+     */
+    abstract fun sendFile(type: ChatType, target: Long, name: String, file: File): Boolean
 
     // 注册命令及其对应的执行器
-    fun registerCommand(vararg commands: String, executor: CommandExecutor) {
+    fun registerCommand(vararg commands: String, executor: CommandExecutor, usage: String) {
         for (command in commands) {
             // 如果命令已经注册，则抛出异常
             if (commandMap.containsKey(command)) {
                 throw IllegalArgumentException("Command $command is already registered.")
             }
-            commandMap[command] = executor
+            commandMap[command] = Pair(executor, usage)
         }
     }
 
@@ -159,7 +175,7 @@ abstract class AbstractBot(
             }
             // 执行对应的命令执行器
             commonScope.launch {
-                commandMap[mainCommand]?.execute(sender, mainCommand, newMsgChain, messageID)
+                commandMap[mainCommand]?.first?.execute(sender, mainCommand, newMsgChain, messageID)
             }
         }
         return true

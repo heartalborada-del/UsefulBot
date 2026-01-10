@@ -22,7 +22,9 @@ class EconomicManager(private val db: Database) {
         transaction(db) {
             addLogger(Slf4jSqlDebugLogger)
             SchemaUtils.create(UsersTable)
+            SchemaUtils.addMissingColumnsStatements(UsersTable)
             SchemaUtils.create(GPRecordsTable)
+            SchemaUtils.addMissingColumnsStatements(GPRecordsTable)
         }
     }
 

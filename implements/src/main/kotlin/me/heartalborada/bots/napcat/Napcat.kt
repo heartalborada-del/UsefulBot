@@ -11,9 +11,9 @@ import me.heartalborada.bots.MessageChainTypeAdapter
 import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.AbstractBot
 import me.heartalborada.commons.bots.MessageChain
-import me.heartalborada.commons.bots.beans.ApiCommon
-import me.heartalborada.commons.bots.beans.FileInfo
-import me.heartalborada.commons.bots.beans.UserInfo
+import me.heartalborada.commons.bots.dto.ApiCommon
+import me.heartalborada.commons.bots.dto.FileInfo
+import me.heartalborada.commons.bots.dto.UserInfo
 import me.heartalborada.commons.bots.events.EventBus
 import me.heartalborada.commons.bots.events.message.GroupMessageEvent
 import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
@@ -22,11 +22,14 @@ import me.heartalborada.commons.bots.events.meta.HeartBeatEvent
 import me.heartalborada.commons.bots.events.notice.*
 import me.heartalborada.commons.bots.events.request.FriendAddRequestEvent
 import me.heartalborada.commons.bots.events.request.GroupAddRequestEvent
+import me.heartalborada.commons.utils.calculateSHA256
+import me.heartalborada.commons.utils.toBase64
 import okhttp3.*
 import okio.IOException
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.io.EOFException
+import java.io.File
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -35,12 +38,15 @@ import kotlin.system.exitProcess
 import kotlin.time.Duration.Companion.milliseconds
 
 class Napcat(
-    private var wsURL: String,
-    private var token: String,
-    isCommandStartWithAt: Boolean = true,
+    private val wsURL: String,
+    private val token: String,
+    commandStartWithAt: Boolean = true,
     commandOperator: Char = '/',
     commandDivider: Char = ' ',
-) : AbstractBot(isCommandStartWithAt, commandOperator, commandDivider) {
+    private val useStreamAPI: Boolean = false,
+    private val streamAPIChunkSize: Int = 512 * 1024,
+    private val streamAPIExpireSeconds: Long = 30 * 60 * 60 * 24,
+) : AbstractBot(commandStartWithAt, commandOperator, commandDivider) {
     private val logger: Logger = LoggerFactory.getLogger(this::class.java)
     private var isConnected = false
     private var eventWS: WebSocket? = null
@@ -182,63 +188,218 @@ class Napcat(
         }
     }
 
-    override fun sendFile(type: ChatType, id: Long, fileInfo: FileInfo): Long {
-        logger.debug("[Send] {} -> [{}] [{}] {}", botID, type.name, id, fileInfo.name)
-        if (fileInfo.url == null) throw IllegalArgumentException("Invalid file url")
+    override fun sendFile(type: ChatType, target: Long, name: String, file: File): Boolean {
+        if (!file.exists() || !file.isFile) throw IllegalArgumentException("Invalid file.")
         return runBlocking {
             withContext(botContext) {
-                mutex.withLock {
-                    val uuid = UUID.randomUUID().toString()
+                val uuid = UUID.randomUUID().toString()
+                if (useStreamAPI) {
+                    val sha256 = file.calculateSHA256()
+                    val size = file.length()
+                    val chunks = if (size % streamAPIChunkSize == 0L) {
+                        size / streamAPIChunkSize
+                    } else {
+                        size / streamAPIChunkSize + 1
+                    }
                     try {
-                        val data = mutableMapOf<String, Any>()
-                        data["file"] = fileInfo.url!!
-                        data["name"] = fileInfo.name
-                        val action = when (type) {
-                            ChatType.GROUP -> {
-                                data["group_id"] = id
-                                "upload_group_file"
-                            }
+                        val shareParameter = mutableMapOf<String, Any>()
+                        shareParameter["stream_id"] = uuid
+                        shareParameter["total_chunks"] = chunks
+                        shareParameter["file_size"] = size
+                        shareParameter["expected_sha256"] = sha256
+                        shareParameter["filename"] = name
+                        shareParameter["file_retention"] = streamAPIExpireSeconds * 1000 // MILLISECONDS
+                        file.inputStream().use { fis ->
+                            val buffer = ByteArray(streamAPIChunkSize)
+                            var chunkIndex = 0L
+                            while (true) {
+                                val readBytes = fis.read(buffer)
+                                if (readBytes == -1) break // EOF
+                                if (readBytes == 0) continue // defensive: should not happen
+                                val echoID = "${uuid}_$chunkIndex"
+                                val param = shareParameter.toMutableMap()
+                                val b64 = buffer.copyOfRange(0, readBytes).toBase64()
+                                param["chunk_index"] = chunkIndex
+                                param["chunk_data"] = b64
+                                val responseDiffered = CompletableDeferred<String>()
+                                pendingReqs[echoID] = responseDiffered
+                                val sent = apiWS?.send(
+                                    gson.toJson(
+                                        ApiCommon(
+                                            "upload_file_stream",
+                                            echoID,
+                                            param
+                                        )
+                                    )
+                                ) == true
+                                if (!sent) {
+                                    logger.error(
+                                        "[Upload] {} -> [{}] [{}] {} Couldn't upload file chunk {}",
+                                        botID,
+                                        type.name,
+                                        target,
+                                        name,
+                                        chunkIndex
+                                    )
+                                    throw IllegalStateException("Failed to send file chunk $chunkIndex")
+                                }
+                                val response = withTimeoutOrNull(50000.milliseconds) {
+                                    responseDiffered.await().also {
+                                        pendingReqs.remove(echoID)
+                                    }
+                                }.also { pendingReqs.remove(echoID) }
+                                if (response == null) {
+                                    pendingReqs.remove(echoID)
+                                    throw IOException("Timeout")
+                                }
+                                val jo = JsonParser.parseString(response).asJsonObject
+                                val rdata = jo.getAsJsonObject("data")
+                                if (rdata.isJsonNull) return@withContext false
+                                when (val code = jo.getAsJsonPrimitive("retcode").asInt) {
+                                    0 -> {
+                                        logger.debug(
+                                            "[Upload] {} -> [{}] [{}] {} Successfully uploaded file chunk {}",
+                                            botID,
+                                            type.name,
+                                            target,
+                                            name,
+                                            chunkIndex
+                                        )
+                                        chunkIndex++
+                                        continue
+                                    }
 
-                            ChatType.PRIVATE -> {
-                                data["user_id"] = id
-                                "upload_private_file"
+                                    else -> throw IllegalStateException(
+                                        "Invalid response code: $code, message: ${
+                                            jo.getAsJsonPrimitive(
+                                                "message"
+                                            ).asString
+                                        }"
+                                    )
+                                }
                             }
-
-                            else -> throw IllegalArgumentException("Invalid chat type")
+                            shareParameter["total_chunks"] = chunkIndex
                         }
+                        val echoID = uuid + "_merge"
+                        val param = shareParameter.toMutableMap()
+                        param["is_complete"] = true
                         val responseDiffered = CompletableDeferred<String>()
-                        pendingReqs[uuid] = responseDiffered
-                        val sent = apiWS?.send(gson.toJson(ApiCommon(action, uuid, data))) == true
-                        if (!sent) throw IllegalStateException("Failed to send file")
+                        pendingReqs[echoID] = responseDiffered
+                        val sent = apiWS?.send(
+                            gson.toJson(
+                                ApiCommon(
+                                    "upload_file_stream",
+                                    echoID,
+                                    param
+                                )
+                            )
+                        ) == true
+                        if (!sent) {
+                            logger.error(
+                                "[Upload] {} -> [{}] [{}] {}: Couldn't request merge file chucks.",
+                                botID,
+                                type.name,
+                                target,
+                                name,
+                            )
+                            throw IllegalStateException("Failed to send merge request")
+                        }
                         val response = withTimeoutOrNull(50000.milliseconds) {
                             responseDiffered.await().also {
-                                pendingReqs.remove(uuid)
+                                pendingReqs.remove(echoID)
                             }
-                        }.also { pendingReqs.remove(uuid) }
-                        if (response == null) throw IOException("Timeout")
-                        val root = JsonParser.parseString(response).asJsonObject
-                        val rdata = root.getAsJsonObject("data")
-                        if (rdata.isJsonNull) return@withContext -1
-                        when (val code = root.getAsJsonPrimitive("retcode").asInt) {
-                            0 -> return@withContext rdata.getAsJsonPrimitive("message_id").asLong
-                            else -> throw IllegalReceiveException(
-                                "Invalid response code: $code, message: ${
-                                    root.getAsJsonPrimitive(
-                                        "message"
-                                    ).asString
-                                }"
-                            )
+                        }.also { pendingReqs.remove(echoID) }
+                        if (response == null) {
+                            pendingReqs.remove(echoID)
+                            throw IOException("Timeout")
                         }
+                        val jo = JsonParser.parseString(response).asJsonObject
+                        val rdata = jo.getAsJsonObject("data")
+                        if (rdata.isJsonNull) return@withContext false
+                        if (rdata.getAsJsonPrimitive("status").asString != "file_complete") {
+                            throw IllegalStateException("File merge failed.")
+                        }
+                        logger.debug(
+                            "[Upload] {} -> [{}] [{}] {}: Successfully merged the file.",
+                            botID,
+                            type.name,
+                            target,
+                            name,
+                        )
+                        val path = rdata.getAsJsonPrimitive("file_path").asString
+                        return@withContext sendFile(type, target, name, "file://${path.replace("\\", "/")}")
                     } catch (e: Exception) {
-                        pendingReqs.remove(uuid)
                         if (e.message != "Timeout") {
-                            return@withContext -1
+                            return@withContext false
                         } else {
                             logger.error("An unexpected error occurred.", e)
                         }
                         throw e
                     }
+                } else {
+                    return@withContext sendFile(type, target, name, "base64://${file.toBase64()}")
                 }
+            }
+
+        }
+    }
+
+    override fun sendFile(type: ChatType, target: Long, name: String, url: String): Boolean {
+        logger.debug("[Send] {} -> [{}] [{}] {}", botID, type.name, target, name)
+        if (url.trim() == "") throw IllegalArgumentException("Invalid url.")
+        return runBlocking {
+            withContext(botContext) {
+                val uuid = UUID.randomUUID().toString()
+                try {
+                    val data = mutableMapOf<String, Any>()
+                    data["file"] = url
+                    data["name"] = name
+                    val action = when (type) {
+                        ChatType.GROUP -> {
+                            data["group_id"] = target
+                            "upload_group_file"
+                        }
+
+                        ChatType.PRIVATE -> {
+                            data["user_id"] = target
+                            "upload_private_file"
+                        }
+
+                        else -> throw IllegalArgumentException("Invalid chat type")
+                    }
+                    val responseDiffered = CompletableDeferred<String>()
+                    pendingReqs[uuid] = responseDiffered
+                    val sent = apiWS?.send(gson.toJson(ApiCommon(action, uuid, data))) == true
+                    if (!sent) throw IllegalStateException("Failed to send file")
+                    val response = withTimeoutOrNull(50000.milliseconds) {
+                        responseDiffered.await().also {
+                            pendingReqs.remove(uuid)
+                        }
+                    }.also { pendingReqs.remove(uuid) }
+                    if (response == null) throw IOException("Timeout")
+                    val root = JsonParser.parseString(response).asJsonObject
+                    val rdata = root.getAsJsonObject("data")
+                    if (rdata.isJsonNull) return@withContext false
+                    when (val code = root.getAsJsonPrimitive("retcode").asInt) {
+                        0 -> return@withContext true
+                        else -> throw IllegalStateException(
+                            "Invalid response code: $code, message: ${
+                                root.getAsJsonPrimitive(
+                                    "message"
+                                ).asString
+                            }"
+                        )
+                    }
+                } catch (e: Exception) {
+                    pendingReqs.remove(uuid)
+                    if (e.message == "Timeout") {
+                        return@withContext false
+                    } else {
+                        logger.error("An unexpected error occurred.", e)
+                    }
+                    throw e
+                }
+
             }
         }
     }
@@ -256,7 +417,7 @@ class Napcat(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            logger.trace("Event Raw Json: $text")
+            logger.trace("[Event] $text")
             try {
                 val root = JsonParser.parseString(text).asJsonObject
                 val ts = root.getAsJsonPrimitive("time").asLong
@@ -475,7 +636,7 @@ class Napcat(
 
     private inner class ApiListener : WebSocketListener() {
         override fun onMessage(webSocket: WebSocket, text: String) {
-            logger.trace("Api Raw Json: $text")
+            logger.trace("[API] $text")
             apiScope.launch {
                 try {
                     val json = JsonParser.parseString(text).asJsonObject

@@ -1,6 +1,6 @@
 package me.heartalborada
 
-import me.heartalborada.commons.bots.beans.MessageSender
+import me.heartalborada.commons.bots.dto.MessageSender
 
 data class QueueExtraData(
     val messageID: Long,

@@ -1,6 +1,6 @@
 package me.heartalborada.commons.bots
 
-import me.heartalborada.commons.bots.beans.FileInfo
+import me.heartalborada.commons.bots.dto.FileInfo
 
 class MessageChain : MutableList<AbstractMessageObject> by mutableListOf() {
     override fun toString(): String {

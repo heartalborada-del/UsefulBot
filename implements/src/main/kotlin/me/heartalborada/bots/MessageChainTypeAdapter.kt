@@ -7,7 +7,7 @@ import com.google.gson.TypeAdapter
 import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonWriter
 import me.heartalborada.commons.bots.*
-import me.heartalborada.commons.bots.beans.FileInfo
+import me.heartalborada.commons.bots.dto.FileInfo
 import okhttp3.internal.toLongOrDefault
 
 class MessageChainTypeAdapter : TypeAdapter<MessageChain>() {

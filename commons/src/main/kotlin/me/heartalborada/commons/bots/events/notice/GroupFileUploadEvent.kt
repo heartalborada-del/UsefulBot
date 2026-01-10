@@ -1,6 +1,6 @@
 package me.heartalborada.commons.bots.events.notice
 
-import me.heartalborada.commons.bots.beans.FileInfo
+import me.heartalborada.commons.bots.dto.FileInfo
 import me.heartalborada.commons.bots.events.AbstractEvent
 
 class GroupFileUploadEvent(

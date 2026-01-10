@@ -3,8 +3,8 @@ package me.heartalborada.comics
 import com.google.common.cache.CacheBuilder
 import com.google.gson.JsonParser
 import me.heartalborada.commons.comic.AbstractComicProvider
-import me.heartalborada.commons.comic.ArchiveInformation
-import me.heartalborada.commons.comic.ComicInformation
+import me.heartalborada.commons.comic.model.ArchiveInformation
+import me.heartalborada.commons.comic.model.ComicInformation
 import me.heartalborada.commons.okhttp.CookieStorageProvider
 import me.heartalborada.commons.okhttp.RetryInterceptor
 import okhttp3.*

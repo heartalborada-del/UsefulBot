@@ -1,4 +1,4 @@
-package me.heartalborada.commons.comic
+package me.heartalborada.commons.comic.model
 
 data class ArchiveInformation(
     val name: String,

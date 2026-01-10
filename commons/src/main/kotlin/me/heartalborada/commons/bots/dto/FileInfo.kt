@@ -1,4 +1,4 @@
-package me.heartalborada.commons.bots.beans
+package me.heartalborada.commons.bots.dto
 
 data class FileInfo(
     val name: String,

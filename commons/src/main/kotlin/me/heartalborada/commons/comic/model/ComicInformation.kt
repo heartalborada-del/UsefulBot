@@ -1,4 +1,4 @@
-package me.heartalborada.commons.comic
+package me.heartalborada.commons.comic.model
 
 data class ComicInformation<T>(
     val id: T,
@@ -27,7 +27,7 @@ data class ComicInformation<T>(
 
         companion object {
             fun fromValue(value: String): Category {
-                return Category.entries.first { it.s == value }
+                return entries.first { it.s == value }
             }
         }
     }

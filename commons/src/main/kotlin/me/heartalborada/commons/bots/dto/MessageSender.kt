@@ -1,4 +1,4 @@
-package me.heartalborada.commons.bots.beans
+package me.heartalborada.commons.bots.dto
 
 import me.heartalborada.commons.ChatType
 
