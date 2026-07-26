@@ -9,7 +9,7 @@ class GPRecord(id: EntityID<ULong>) : Entity<ULong>(id) {
     companion object : EntityClass<ULong, GPRecord>(GPRecordsTable)
 
     var userId by GPRecordsTable.userId
-    val createdAt by GPRecordsTable.createdAt
+    var createdAt by GPRecordsTable.createdAt
     var operation by GPRecordsTable.operation
     var amount by GPRecordsTable.amount
 }

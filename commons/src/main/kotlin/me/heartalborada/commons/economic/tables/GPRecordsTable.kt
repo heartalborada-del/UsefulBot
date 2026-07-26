@@ -5,15 +5,18 @@ import org.jetbrains.exposed.dao.id.IdTable
 import org.jetbrains.exposed.sql.Column
 import org.jetbrains.exposed.sql.javatime.timestamp
 import java.time.Clock
-import java.time.Instant
 
 object GPRecordsTable : IdTable<ULong>("records") {
     override val id: Column<EntityID<ULong>> = ulong("id").autoIncrement().entityId()
     val userId = ulong("user_id").references(UsersTable.id)
-    val createdAt = timestamp("created_at").default(Clock.systemUTC().instant())
+    val createdAt = timestamp("created_at").clientDefault { Clock.systemUTC().instant() }
     val operation = enumeration("operation", RecordType::class)
-    val amount = long("amount").default(0)
+    val amount = long("amount")
     override val primaryKey = PrimaryKey(id)
+
+    init {
+        index("idx_records_user_created", false, userId, createdAt)
+    }
 
     enum class RecordType {
         DEPOSIT,

@@ -11,7 +11,7 @@ object UsersTable : IdTable<ULong>("users") {
     override val id: Column<EntityID<ULong>> = ulong("id").entityId()
     val createdAt = timestamp("created_at").clientDefault { Clock.systemUTC().instant() }
     val updatedAt = timestamp("updated_at").clientDefault { Clock.systemUTC().instant() }
-    val balance = long("GP").default(100)
+    val balance = long("GP").default(0)
     val checkinAt = timestamp("checkin_at").clientDefault { Instant.ofEpochSecond(0) }
     val role = enumeration("role", Role::class).clientDefault { Role.USER }.default(Role.USER)
     override val primaryKey = PrimaryKey(id)

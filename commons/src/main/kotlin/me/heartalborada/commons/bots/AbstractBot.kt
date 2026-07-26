@@ -8,15 +8,17 @@ import me.heartalborada.commons.bots.events.EventBus
 import me.heartalborada.commons.bots.events.message.GroupMessageEvent
 import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
 import me.heartalborada.commons.commands.CommandExecutor
+import me.heartalborada.commons.i18n.Translator
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.io.File
-import java.util.*
+import java.util.Locale
 
 abstract class AbstractBot(
     private val commandStartWithAt: Boolean = true,
     private val commandOperator: Char = '/',
-    private val commandDivider: Char = ' '
+    private val commandDivider: Char = ' ',
+    protected val translator: Translator = Translator(),
 ) {
     private val logger: Logger = LoggerFactory.getLogger(this::class.java)
     private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
@@ -25,7 +27,12 @@ abstract class AbstractBot(
     private val commonScope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.IO + exceptionHandler + CoroutineName("BotExecutorScope"))
 
-    private val commandMap = mutableMapOf<String, Pair<CommandExecutor, String>>()
+    private class CommandDefinition(
+        val executor: CommandExecutor,
+        val usage: String,
+    )
+
+    private val commandMap = linkedMapOf<String, CommandDefinition>()
     private var isRegistered: Boolean = false
 
     init {
@@ -38,20 +45,22 @@ abstract class AbstractBot(
                     args: MessageChain,
                     messageID: Long
                 ) {
-                    sendMessage(
-                        sender.type,
-                        sender.target,
-                        MessageChain().also {
-                            val builder = StringBuilder("Commands: \n")
-                            commandMap.forEach { (key,value) ->
-                                builder.append("  $commandOperator$key: ${value.second}\n")
-                            }
-                            it.add(PlainText(builder.toString().trimIndent()))
+                    val definitions = commandMap.values.distinct()
+                    val helpText = buildString {
+                        appendLine(translator.translate("command.help.header"))
+                        definitions.forEach { definition ->
+                            val names = commandMap
+                                .filterValues { it === definition }
+                                .keys
+                                .joinToString(", ") { "$commandOperator$it" }
+                            append("  $names — ${definition.usage}")
+                            if (definition !== definitions.last()) appendLine()
                         }
-                    )
+                    }
+                    reply(sender, messageID, helpText)
                 }
             },
-            usage = "Show all available commands."
+            usage = translator.translate("command.help.usage")
         )
     }
 
@@ -93,29 +102,36 @@ abstract class AbstractBot(
      */
     abstract fun sendFile(type: ChatType, target: Long, name: String, file: File): Boolean
 
-    // 注册命令及其对应的执行器
     fun registerCommand(vararg commands: String, executor: CommandExecutor, usage: String) {
-        for (command in commands) {
-            // 如果命令已经注册，则抛出异常
-            if (commandMap.containsKey(command)) {
-                throw IllegalArgumentException("Command $command is already registered.")
+        require(commands.isNotEmpty()) { "At least one command name is required." }
+        require(usage.isNotBlank()) { "Command usage must not be blank." }
+
+        val normalizedCommands = commands
+            .map { it.trim().lowercase(Locale.ROOT) }
+            .also { names ->
+                require(names.none(String::isBlank)) { "Command name must not be blank." }
+                require(names.distinct().size == names.size) { "Command aliases must be unique." }
+                require(names.none { commandDivider in it || commandOperator in it }) {
+                    "Command name must not contain the operator or divider."
+                }
             }
-            commandMap[command] = Pair(executor, usage)
+
+        normalizedCommands.firstOrNull(commandMap::containsKey)?.let {
+            throw IllegalArgumentException("Command $it is already registered.")
         }
+
+        val definition = CommandDefinition(executor, usage.trim())
+        normalizedCommands.forEach { commandMap[it] = definition }
     }
 
-    // 取消注册命令
     fun unregisterCommand(vararg commands: String) {
-        for (command in commands) {
-            // 如果命令不存在，则抛出异常
-            if (!commandMap.containsKey(command)) {
-                throw IllegalArgumentException("Command $command is not registered.")
-            }
-            commandMap.remove(command)
+        val normalizedCommands = commands.map { it.trim().lowercase(Locale.ROOT) }
+        normalizedCommands.firstOrNull { it !in commandMap }?.let {
+            throw IllegalArgumentException("Command $it is not registered.")
         }
+        normalizedCommands.forEach(commandMap::remove)
     }
 
-    // 注册命令事件
     private fun registerCommandEvent(isStartWithAtBot: Boolean = true, operator: Char? = null, divider: Char = ' ') {
         this.getEventBus().register(GroupMessageEvent::class.java) {
             logger.info(
@@ -125,10 +141,9 @@ abstract class AbstractBot(
                 it.sender.userID,
                 it.message.toString()
             )
-            // 如果消息不是以@机器人开头，则返回
-            if (isStartWithAtBot && (it.message[0] as? At)?.target != it.botID) return@register
+            if (isStartWithAtBot && (it.message.firstOrNull() as? At)?.target != it.botID) return@register
             val copy = MessageChain()
-            copy.addAll(it.message.toMutableList())
+            copy.addAll(it.message)
             if (isStartWithAtBot) copy.removeAt(0)
             commandParser(MessageSender(it.groupID, it.sender, ChatType.GROUP), copy, operator, divider, it.messageID)
         }
@@ -145,7 +160,6 @@ abstract class AbstractBot(
         isRegistered = true
     }
 
-    // 解析命令并执行对应的命令执行器
     private fun commandParser(
         sender: MessageSender,
         messageChain: MessageChain,
@@ -153,31 +167,62 @@ abstract class AbstractBot(
         divider: Char,
         messageID: Long
     ): Boolean {
-        if (messageChain.size > 0 && messageChain[0] is PlainText) {
-            val firstText = (messageChain[0] as PlainText).text.trim()
-            var mainCommand = firstText.split(divider)[0].lowercase(Locale.getDefault())
-            if (operator != null) mainCommand = mainCommand.removePrefix(operator.toString())
-            // 如果命令不以指定的操作符开头，则返回
-            if (operator != null && firstText[0] != operator) return false
-            // 如果命令为空或不在命令映射中，则返回
-            if (firstText == "" || mainCommand == "" || !commandMap.containsKey(mainCommand)) return false
-            val newMsgChain = MessageChain()
-            messageChain.forEach {
-                if (it is PlainText) {
-                    it.text.trim().split(divider).forEach { its ->
-                        if (its.isNotEmpty()) {
-                            newMsgChain.add(PlainText(its))
-                        }
-                    }
-                } else {
-                    newMsgChain.add(it)
-                }
-            }
-            // 执行对应的命令执行器
-            commonScope.launch {
-                commandMap[mainCommand]?.first?.execute(sender, mainCommand, newMsgChain, messageID)
+        val firstText = (messageChain.firstOrNull() as? PlainText)?.text?.trimStart() ?: return false
+        if (firstText.isEmpty() || operator != null && !firstText.startsWith(operator)) return false
+
+        val commandBody = if (operator == null) firstText else firstText.drop(1)
+        val commandName = commandBody
+            .substringBefore(divider)
+            .trim()
+            .lowercase(Locale.ROOT)
+        if (commandName.isEmpty()) return false
+
+        val definition = commandMap[commandName]
+        if (definition == null) {
+            reply(
+                sender,
+                messageID,
+                translator.translate(
+                    "command.unknown",
+                    "$commandOperator$commandName",
+                    commandOperator
+                )
+            )
+            return true
+        }
+
+        val args = MessageChain()
+        val firstArgument = commandBody.substringAfter(divider, "").trimStart(divider)
+        if (firstArgument.isNotEmpty()) {
+            args.add(PlainText(firstArgument))
+        }
+        messageChain.drop(1).forEach(args::add)
+
+        commonScope.launch {
+            try {
+                definition.executor.execute(sender, commandName, args, messageID)
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (exception: Exception) {
+                logger.error(
+                    "Failed to execute command {} for user {} in {} {}.",
+                    commandName,
+                    sender.user.userID,
+                    sender.type,
+                    sender.target,
+                    exception
+                )
+                reply(
+                    sender,
+                    messageID,
+                    translator.translate("command.execution_failed")
+                )
             }
         }
         return true
+    }
+
+    private fun reply(sender: MessageSender, messageID: Long, text: String) {
+        sendMessage(sender.type, sender.target, MessageChain.replyTo(messageID, text))
     }
 }

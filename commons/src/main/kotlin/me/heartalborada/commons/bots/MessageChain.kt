@@ -6,6 +6,17 @@ class MessageChain : MutableList<AbstractMessageObject> by mutableListOf() {
     override fun toString(): String {
         return joinToString(separator = "") { it.toString() }
     }
+
+    companion object {
+        fun text(text: String): MessageChain = MessageChain().apply {
+            add(PlainText(text))
+        }
+
+        fun replyTo(messageID: Long, text: String): MessageChain = MessageChain().apply {
+            add(Reply(messageID))
+            add(PlainText(text))
+        }
+    }
 }
 
 abstract class AbstractMessageObject {

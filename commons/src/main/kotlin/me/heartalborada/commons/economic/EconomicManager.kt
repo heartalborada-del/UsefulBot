@@ -4,106 +4,202 @@ import me.heartalborada.commons.economic.dao.GPRecord
 import me.heartalborada.commons.economic.dao.User
 import me.heartalborada.commons.economic.tables.GPRecordsTable
 import me.heartalborada.commons.economic.tables.UsersTable
+import org.jetbrains.exposed.dao.id.EntityID
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.SchemaUtils
-import org.jetbrains.exposed.sql.Slf4jSqlDebugLogger
-import org.jetbrains.exposed.sql.addLogger
+import org.jetbrains.exposed.sql.SqlExpressionBuilder
+import org.jetbrains.exposed.sql.SortOrder
+import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.insert
+import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
-import org.slf4j.LoggerFactory
+import org.jetbrains.exposed.sql.update
+import org.jetbrains.exposed.sql.vendors.currentDialect
 import java.time.Clock
+import java.time.Instant
 import java.time.ZoneOffset
-import java.time.ZonedDateTime
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import kotlin.random.Random
 
-class EconomicManager(private val db: Database) {
-    private val logger = LoggerFactory.getLogger(this::class.java)
+class EconomicManager(
+    private val db: Database,
+    private val clock: Clock = Clock.systemUTC(),
+    private val awardGenerator: (from: Int, until: Int) -> Int = Random::nextInt,
+) {
+    private val userLocks = Array(USER_LOCK_STRIPES) { ReentrantLock() }
 
     init {
         transaction(db) {
-            addLogger(Slf4jSqlDebugLogger)
-            SchemaUtils.create(UsersTable)
-            SchemaUtils.addMissingColumnsStatements(UsersTable)
-            SchemaUtils.create(GPRecordsTable)
-            SchemaUtils.addMissingColumnsStatements(GPRecordsTable)
+            val tables = arrayOf(UsersTable, GPRecordsTable)
+            SchemaUtils.create(*tables)
+            SchemaUtils.addMissingColumnsStatements(*tables).forEach { statement ->
+                exec(statement)
+            }
+            val existingIndexNames = currentDialect.existingIndices(*tables)
+                .values
+                .flatten()
+                .mapTo(mutableSetOf()) { it.indexName.lowercase() }
+            tables
+                .flatMap { it.indices }
+                .filterNot { it.indexName.lowercase() in existingIndexNames }
+                .flatMap(SchemaUtils::createIndex)
+                .forEach { statement -> exec(statement) }
         }
     }
 
     fun getUser(id: ULong): User {
-        return getUserOrCreate(id)
+        return withUserLock(id) {
+            transaction(db) {
+                ensureUser(id)
+                User.findById(id)!!.also { user ->
+                    user.createdAt
+                    user.updatedAt
+                    user.balance
+                    user.checkinAt
+                    user.role
+                }
+            }
+        }
     }
 
     fun getBalance(userId: ULong): Long {
-        return transaction(db) {
-            val user = getUserOrCreate(userId)
-            return@transaction user.balance
+        return withUserLock(userId) {
+            transaction(db) {
+                ensureUser(userId)
+                UsersTable
+                    .select(UsersTable.balance)
+                    .where { UsersTable.id eq userId }
+                    .single()[UsersTable.balance]
+            }
         }
     }
 
-    private fun getUserOrCreate(id: ULong): User = transaction(db) {
-        var u = User.findById(id)
-        if (u == null) {
-            u = User.new(id) {
-                balance = 0
+    private fun ensureUser(id: ULong) {
+        val exists = UsersTable.selectAll()
+            .where { UsersTable.id eq id }
+            .limit(1)
+            .any()
+        if (!exists) {
+            UsersTable.insert {
+                it[UsersTable.id] = EntityID(id, UsersTable)
             }
         }
-        return@transaction u
     }
 
     fun depositGP(userId: ULong, amount: Long): Boolean {
         if (amount <= 0) return false
-        return transaction(db) {
-            val user = getUserOrCreate(userId)
-            user.balance += amount
-            user.updatedAt = Clock.systemUTC().instant()
-            GPRecord.new {
-                this.userId = user.id.value
-                this.operation = GPRecordsTable.RecordType.DEPOSIT
-                this.amount = amount
+        return withUserLock(userId) {
+            transaction(db) {
+                ensureUser(userId)
+                val now = clock.instant()
+                val updatedRows = UsersTable.update({
+                    (UsersTable.id eq userId) and (UsersTable.balance lessEq Long.MAX_VALUE - amount)
+                }) {
+                    with(SqlExpressionBuilder) {
+                        it.update(UsersTable.balance, UsersTable.balance + amount)
+                    }
+                    it[updatedAt] = now
+                }
+                if (updatedRows == 0) {
+                    return@transaction false
+                }
+                createRecord(userId, GPRecordsTable.RecordType.DEPOSIT, amount, now)
+                true
             }
-            return@transaction true
         }
     }
 
     fun withdrawGP(userId: ULong, amount: Long): Boolean {
         if (amount <= 0) return false
-        return transaction(db) {
-            val user = getUserOrCreate(userId)
-            if (user.balance < amount) {
-                return@transaction false
+        return withUserLock(userId) {
+            transaction(db) {
+                ensureUser(userId)
+                val now = clock.instant()
+                val updatedRows = UsersTable.update({
+                    (UsersTable.id eq userId) and (UsersTable.balance greaterEq amount)
+                }) {
+                    with(SqlExpressionBuilder) {
+                        it.update(UsersTable.balance, UsersTable.balance - amount)
+                    }
+                    it[updatedAt] = now
+                }
+                if (updatedRows == 0) {
+                    return@transaction false
+                }
+                createRecord(userId, GPRecordsTable.RecordType.WITHDRAW, amount, now)
+                true
             }
-            user.balance -= amount
-            user.updatedAt = Clock.systemUTC().instant()
-            GPRecord.new {
-                this.userId = user.id.value
-                this.operation = GPRecordsTable.RecordType.WITHDRAW
-                this.amount = amount
-            }
-            return@transaction true
         }
     }
 
     fun userCheckIn(userId: ULong, from: Int = 50, to: Int = 100): Pair<Long, Boolean> {
-        return transaction(db) {
-            val user = getUserOrCreate(userId)
-            val start = ZonedDateTime.now(ZoneOffset.UTC).toLocalDate().atStartOfDay(ZoneOffset.UTC).toInstant()
-            if (user.checkinAt.atZone(ZoneOffset.UTC)
-                    .toLocalDate().plusDays(1)
-                    .atStartOfDay(ZoneOffset.UTC).toInstant() > start
-            ) {
-                return@transaction Pair(0L, false)
+        require(from > 0) { "Check-in reward must be positive." }
+        require(to >= from) { "Check-in reward upper bound must not be smaller than the lower bound." }
+        return withUserLock(userId) {
+            transaction(db) {
+                ensureUser(userId)
+                val now = clock.instant()
+                val start = now.atZone(ZoneOffset.UTC).toLocalDate().atStartOfDay(ZoneOffset.UTC).toInstant()
+                val award = if (from == to) from else awardGenerator(from, to)
+                val updatedRows = UsersTable.update({
+                    (UsersTable.id eq userId) and
+                        (UsersTable.checkinAt less start) and
+                        (UsersTable.balance lessEq Long.MAX_VALUE - award)
+                }) {
+                    with(SqlExpressionBuilder) {
+                        it.update(UsersTable.balance, UsersTable.balance + award.toLong())
+                    }
+                    it[updatedAt] = now
+                    it[checkinAt] = now
+                }
+                if (updatedRows == 0) {
+                    return@transaction Pair(0L, false)
+                }
+                createRecord(userId, GPRecordsTable.RecordType.DEPOSIT, award.toLong(), now)
+                Pair(award.toLong(), true)
             }
-            val award = Random.nextInt(from, to)
-            depositGP(userId, award.toLong())
-            user.checkinAt = Clock.systemUTC().instant()
-            return@transaction Pair(award.toLong(), true)
         }
     }
 
-    fun queryRecord(usedId: ULong, limit: Int = 10): List<GPRecord> {
+    fun queryRecord(userId: ULong, limit: Int = 10): List<GPRecord> {
+        if (limit <= 0) return emptyList()
+        val safeLimit = limit.coerceAtMost(MAX_RECORD_QUERY_LIMIT)
         return transaction(db) {
-            GPRecord.find { GPRecordsTable.userId eq usedId }
-                .limit(limit)
+            GPRecord.find { GPRecordsTable.userId eq userId }
+                .orderBy(GPRecordsTable.createdAt to SortOrder.DESC, GPRecordsTable.id to SortOrder.DESC)
+                .limit(safeLimit)
                 .toList()
+                .onEach { record ->
+                    record.userId
+                    record.createdAt
+                    record.operation
+                    record.amount
+                }
         }
+    }
+
+    private fun createRecord(
+        userId: ULong,
+        operation: GPRecordsTable.RecordType,
+        amount: Long,
+        createdAt: Instant,
+    ) {
+        GPRecord.new {
+            this.userId = userId
+            this.operation = operation
+            this.amount = amount
+            this.createdAt = createdAt
+        }
+    }
+
+    private inline fun <T> withUserLock(userId: ULong, block: () -> T): T {
+        val index = (userId.hashCode() and Int.MAX_VALUE) % userLocks.size
+        return userLocks[index].withLock(block)
+    }
+
+    private companion object {
+        const val USER_LOCK_STRIPES = 256
+        const val MAX_RECORD_QUERY_LIMIT = 1_000
     }
 }

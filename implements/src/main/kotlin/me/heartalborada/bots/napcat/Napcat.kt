@@ -22,6 +22,7 @@ import me.heartalborada.commons.bots.events.meta.HeartBeatEvent
 import me.heartalborada.commons.bots.events.notice.*
 import me.heartalborada.commons.bots.events.request.FriendAddRequestEvent
 import me.heartalborada.commons.bots.events.request.GroupAddRequestEvent
+import me.heartalborada.commons.i18n.Translator
 import me.heartalborada.commons.utils.calculateSHA256
 import me.heartalborada.commons.utils.toBase64
 import okhttp3.*
@@ -46,7 +47,8 @@ class Napcat(
     private val useStreamAPI: Boolean = false,
     private val streamAPIChunkSize: Int = 512 * 1024,
     private val streamAPIExpireSeconds: Long = 30 * 60 * 60 * 24,
-) : AbstractBot(commandStartWithAt, commandOperator, commandDivider) {
+    translator: Translator = Translator(),
+) : AbstractBot(commandStartWithAt, commandOperator, commandDivider, translator) {
     private val logger: Logger = LoggerFactory.getLogger(this::class.java)
     private var isConnected = false
     private var eventWS: WebSocket? = null
