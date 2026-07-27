@@ -9,13 +9,17 @@ import me.heartalborada.comics.JMComic
 import me.heartalborada.commons.Util
 import me.heartalborada.commons.bots.*
 import me.heartalborada.commons.bots.dto.FileInfo
+import me.heartalborada.commons.bots.dto.ForwardMessageNode
 import me.heartalborada.commons.bots.dto.MessageSender
 import me.heartalborada.commons.comic.model.ArchiveInformation
 import me.heartalborada.commons.comic.PDFGenerator
 import me.heartalborada.commons.comic.model.ComicInformation
+import me.heartalborada.commons.comic.model.ComicSearchPage
+import me.heartalborada.commons.comic.model.ComicSearchResult
 import me.heartalborada.commons.commands.CommandExecutor
 import me.heartalborada.commons.comparator.NaturalFileNameComparator
 import me.heartalborada.commons.downloader.DownloadManager
+import me.heartalborada.commons.economic.ComicPricing
 import me.heartalborada.commons.economic.EconomicManager
 import me.heartalborada.commons.i18n.Translator
 import me.heartalborada.commons.okhttp.CookieStorageProvider
@@ -227,6 +231,46 @@ fun main() = runBlocking {
         }
     }
 
+    fun sendJmPdf(pdf: File, sender: MessageSender, messageID: Long, bot: AbstractBot) {
+        check(pdf.isFile) { "JMComic PDF does not exist: ${pdf.absolutePath}" }
+        val cost = ComicPricing.jmPdfCost(pdf.length())
+        val userId = sender.user.userID.toULong()
+        val charged = cost > 0
+        if (charged && !economic.withdrawGP(userId, cost)) {
+            bot.reply(
+                sender,
+                messageID,
+                translator.translate("jm.insufficient_gp", cost, economic.getBalance(userId))
+            )
+            return
+        }
+
+        try {
+            bot.reply(
+                sender,
+                messageID,
+                if (charged) {
+                    translator.translate("jm.charged", cost, economic.getBalance(userId))
+                } else {
+                    translator.translate("jm.free")
+                }
+            )
+            if (!bot.sendFile(sender.type, sender.target, pdf.name, pdf)) {
+                if (charged) {
+                    economic.depositGP(userId, cost)
+                    bot.reply(sender, messageID, translator.translate("jm.send_failed_refunded", cost))
+                } else {
+                    bot.reply(sender, messageID, translator.translate("jm.send_failed"))
+                }
+            }
+        } catch (exception: Exception) {
+            if (charged) {
+                economic.depositGP(userId, cost)
+            }
+            throw exception
+        }
+    }
+
     fun jmQueueProcess(albumId: String, sender: MessageSender, messageID: Long, bot: AbstractBot) {
         val cacheKey = "jm:$albumId"
         val pdf = File(jmPdfFolder, "JM$albumId.pdf")
@@ -237,11 +281,8 @@ fun main() = runBlocking {
         sendComicInformation(info, cover, sender, messageID, bot)
 
         if (pdfCache.getIfPresent(cacheKey) == true || pdf.isFile) {
-            bot.reply(sender, messageID, translator.translate("gallery.cache_hit"))
-            val sent = bot.sendFile(sender.type, sender.target, "JM$albumId.pdf", pdf)
-            if (!sent) {
-                bot.reply(sender, messageID, translator.translate("gallery.cache_send_failed"))
-            }
+            bot.reply(sender, messageID, translator.translate("jm.cache_hit"))
+            sendJmPdf(pdf, sender, messageID, bot)
             return
         }
 
@@ -259,10 +300,7 @@ fun main() = runBlocking {
             }"
         )
         pdfCache.put(cacheKey, true)
-        val sent = bot.sendFile(sender.type, sender.target, "JM$albumId.pdf", pdf)
-        if (!sent) {
-            bot.reply(sender, messageID, translator.translate("gallery.send_failed"))
-        }
+        sendJmPdf(pdf, sender, messageID, bot)
     }
 
     logger.info("Initializing...")
@@ -330,160 +368,206 @@ fun main() = runBlocking {
         translator = translator,
     )
 
-    bot.registerCommand(
-        commands = arrayOf("about"),
-        usage = translator.translate("command.about.usage"),
-        executor = object : CommandExecutor {
-        override suspend fun execute(sender: MessageSender, command: String, args: MessageChain, messageID: Long) {
-            bot.reply(sender, messageID, translator.translate("command.about.content"))
-        }
-    })
+    bot.registerCommand("about", usage = translator.translate("command.about.usage")) {
+        sender, _, _, messageID ->
+        bot.reply(sender, messageID, translator.translate("command.about.content"))
+    }
 
-    bot.registerCommand(
-        commands = arrayOf("eh"),
-        usage = translator.translate("command.eh.usage", config.getConfig().bot.commandOperator),
-        executor = object : CommandExecutor {
-        override suspend fun execute(sender: MessageSender, command: String, args: MessageChain, messageID: Long) {
-            val url = args.toString().trim()
-            if (url.isEmpty()) {
-                bot.reply(
-                    sender,
-                    messageID,
-                    translator.translate("command.eh.missing_url", config.getConfig().bot.commandOperator)
-                )
-                return
-            }
-
-            val u: Pair<String, String>
-            try {
-                u = eh.parseUrl(url)
-            } catch (_: IllegalArgumentException) {
-                bot.reply(sender, messageID, translator.translate("command.eh.invalid_url"))
-                return
-            }
-
-            val (checkInAmount, checkedIn) = economic.userCheckIn(sender.user.userID.toULong())
-            val res = queue.put(
-                sender.user.userID,
-                ComicTask.EHentai(u),
-                QueueExtraData(messageID, sender)
-            )
-            val checkInMessage = if (checkedIn) {
-                translator.translate("command.eh.checkin_bonus", checkInAmount)
-            } else {
-                ""
-            }
-            val response = when (res) {
-                ProcessingQueue.PutStatus.QUEUE_FULL ->
-                    translator.translate("command.eh.queue_full")
-                ProcessingQueue.PutStatus.USER_QUEUE_FULL ->
-                    translator.translate("command.eh.user_queue_full")
-                ProcessingQueue.PutStatus.DUPLICATE_TASK ->
-                    translator.translate("command.eh.duplicate")
-                ProcessingQueue.PutStatus.SUCCESS ->
-                    translator.translate("command.eh.accepted")
-                ProcessingQueue.PutStatus.FAILURE ->
-                    translator.translate("command.eh.queue_failed")
-            }
-            bot.reply(sender, messageID, listOf(response, checkInMessage).filter(String::isNotEmpty).joinToString(" "))
-        }
-    })
-
-    bot.registerCommand(
-        commands = arrayOf("jm"),
-        usage = translator.translate("command.jm.usage", config.getConfig().bot.commandOperator),
-        executor = object : CommandExecutor {
-            override suspend fun execute(
-                sender: MessageSender,
-                command: String,
-                args: MessageChain,
-                messageID: Long
-            ) {
-                val target = args.toString().trim()
-                if (target.isEmpty()) {
-                    bot.reply(
-                        sender,
-                        messageID,
-                        translator.translate("command.jm.missing_target", config.getConfig().bot.commandOperator)
-                    )
-                    return
-                }
-                val albumId = try {
-                    jm.parseUrl(target)
-                } catch (_: IllegalArgumentException) {
-                    bot.reply(sender, messageID, translator.translate("command.jm.invalid_target"))
-                    return
-                }
-                val result = queue.put(
-                    sender.user.userID,
-                    ComicTask.JMComic(albumId),
-                    QueueExtraData(messageID, sender)
-                )
-                val response = when (result) {
-                    ProcessingQueue.PutStatus.QUEUE_FULL ->
-                        translator.translate("command.jm.queue_full")
-                    ProcessingQueue.PutStatus.USER_QUEUE_FULL ->
-                        translator.translate("command.jm.user_queue_full")
-                    ProcessingQueue.PutStatus.DUPLICATE_TASK ->
-                        translator.translate("command.jm.duplicate")
-                    ProcessingQueue.PutStatus.SUCCESS ->
-                        translator.translate("command.jm.accepted")
-                    ProcessingQueue.PutStatus.FAILURE ->
-                        translator.translate("command.jm.queue_failed")
-                }
-                bot.reply(sender, messageID, response)
-            }
-        }
-    )
-
-    bot.registerCommand(
-        commands = arrayOf("checkin"),
-        usage = translator.translate("command.checkin.usage"),
-        executor = object : CommandExecutor {
-        override suspend fun execute(
-            sender: MessageSender,
-            command: String,
-            args: MessageChain,
-            messageID: Long
-        ) {
-            val userId = sender.user.userID.toULong()
-            val (amount, success) = economic.userCheckIn(userId)
-            if (success) {
-                bot.reply(
-                    sender,
-                    messageID,
-                    translator.translate("command.checkin.success", amount, economic.getBalance(userId))
-                )
-            } else {
-                bot.reply(
-                    sender,
-                    messageID,
-                    translator.translate("command.checkin.already_done", economic.getBalance(userId))
-                )
-            }
-        }
-    })
-
-    bot.registerCommand(
-        commands = arrayOf("info"),
-        usage = translator.translate("command.info.usage"),
-        executor = object : CommandExecutor {
-        override suspend fun execute(
-            sender: MessageSender,
-            command: String,
-            args: MessageChain,
-            messageID: Long
-        ) {
-            val u = economic.getUser(sender.user.userID.toULong())
-            val lastCheckIn = u.checkinAt.atZone(ZoneOffset.UTC)
-                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss 'UTC'"))
+    val getEHExecutor = CommandExecutor { sender, _, args, messageID ->
+        val url = args.toString().trim()
+        if (url.isEmpty()) {
             bot.reply(
                 sender,
                 messageID,
-                translator.translate("command.info.content", u.role.name, u.balance, lastCheckIn)
+                translator.translate("command.eh.missing_url", config.getConfig().bot.commandOperator)
+            )
+            return@CommandExecutor
+        }
+
+        val gallery = try {
+            eh.parseUrl(url)
+        } catch (_: IllegalArgumentException) {
+            bot.reply(sender, messageID, translator.translate("command.eh.invalid_url"))
+            return@CommandExecutor
+        }
+
+        val (checkInAmount, checkedIn) = economic.userCheckIn(sender.user.userID.toULong())
+        val result = queue.put(
+            sender.user.userID,
+            ComicTask.EHentai(gallery),
+            QueueExtraData(messageID, sender)
+        )
+        val checkInMessage = if (checkedIn) {
+            translator.translate("command.eh.checkin_bonus", checkInAmount)
+        } else {
+            ""
+        }
+        val response = when (result) {
+            ProcessingQueue.PutStatus.QUEUE_FULL ->
+                translator.translate("command.eh.queue_full")
+            ProcessingQueue.PutStatus.USER_QUEUE_FULL ->
+                translator.translate("command.eh.user_queue_full")
+            ProcessingQueue.PutStatus.DUPLICATE_TASK ->
+                translator.translate("command.eh.duplicate")
+            ProcessingQueue.PutStatus.SUCCESS ->
+                translator.translate("command.eh.accepted")
+            ProcessingQueue.PutStatus.FAILURE ->
+                translator.translate("command.eh.queue_failed")
+        }
+        bot.reply(sender, messageID, listOf(response, checkInMessage).filter(String::isNotEmpty).joinToString(" "))
+    }
+
+    val getJMExecutor = CommandExecutor { sender, _, args, messageID ->
+        val target = args.toString().trim()
+        if (target.isEmpty()) {
+            bot.reply(
+                sender,
+                messageID,
+                translator.translate("command.jm.missing_target", config.getConfig().bot.commandOperator)
+            )
+            return@CommandExecutor
+        }
+        val albumId = try {
+            jm.parseUrl(target)
+        } catch (_: IllegalArgumentException) {
+            bot.reply(sender, messageID, translator.translate("command.jm.invalid_target"))
+            return@CommandExecutor
+        }
+        val result = queue.put(
+            sender.user.userID,
+            ComicTask.JMComic(albumId),
+            QueueExtraData(messageID, sender)
+        )
+        val response = when (result) {
+            ProcessingQueue.PutStatus.QUEUE_FULL ->
+                translator.translate("command.jm.queue_full")
+            ProcessingQueue.PutStatus.USER_QUEUE_FULL ->
+                translator.translate("command.jm.user_queue_full")
+            ProcessingQueue.PutStatus.DUPLICATE_TASK ->
+                translator.translate("command.jm.duplicate")
+            ProcessingQueue.PutStatus.SUCCESS ->
+                translator.translate("command.jm.accepted")
+            ProcessingQueue.PutStatus.FAILURE ->
+                translator.translate("command.jm.queue_failed")
+        }
+        bot.reply(sender, messageID, response)
+    }
+
+    bot.registerCommand(
+        "get",
+        usage = translator.translate("command.get.usage", config.getConfig().bot.commandOperator),
+    ) {
+        subcommand(
+            "eh",
+            usage = translator.translate("command.get.eh.usage", config.getConfig().bot.commandOperator),
+            executor = getEHExecutor,
+        )
+        subcommand(
+            "jm",
+            usage = translator.translate("command.get.jm.usage", config.getConfig().bot.commandOperator),
+            executor = getJMExecutor,
+        )
+    }
+
+    fun searchExecutor(
+        source: String,
+        search: (String, Int) -> ComicSearchPage<*>,
+    ): CommandExecutor = CommandExecutor { sender, _, args, messageID ->
+        val rawArguments = args.toString().trim().split(Regex("\\s+"))
+            .filter(String::isNotBlank)
+        val pageArgument = rawArguments.firstOrNull {
+            it.startsWith("--page=", ignoreCase = true)
+        }
+        val page = if (pageArgument == null) {
+            1
+        } else {
+            pageArgument.substringAfter('=').toIntOrNull() ?: -1
+        }
+        val keyword = rawArguments.filterNot { it == pageArgument }.joinToString(" ").trim()
+        if (keyword.isEmpty() || page <= 0) {
+            bot.reply(
+                sender,
+                messageID,
+                translator.translate("command.search.invalid", config.getConfig().bot.commandOperator)
+            )
+            return@CommandExecutor
+        }
+
+        val searchPage = try {
+            search(keyword, page)
+        } catch (exception: Exception) {
+            logger.warn("Search failed for {} page {}: {}", source, page, keyword, exception)
+            bot.reply(sender, messageID, translator.translate("command.search.failed"))
+            return@CommandExecutor
+        }
+        if (searchPage.results.isEmpty()) {
+            bot.reply(sender, messageID, translator.translate("command.search.empty", keyword))
+            return@CommandExecutor
+        }
+
+        val nodes = searchPage.results.take(SEARCH_RESULT_LIMIT).mapIndexed { index, result ->
+            ForwardMessageNode.CustomMessage(
+                userID = sender.user.userID,
+                nickname = if (source == "eh") "E-Hentai #${index + 1}" else "JMComic #${index + 1}",
+                content = MessageChain.text(
+                    formatSearchResult(
+                        source = source,
+                        result = result,
+                        index = index + 1,
+                        commandOperator = config.getConfig().bot.commandOperator,
+                    )
+                ),
             )
         }
-    })
+        bot.sendForwardMessage(sender.type, sender.target, nodes)
+    }
+
+    bot.registerCommand(
+        "search",
+        usage = translator.translate("command.search.usage", config.getConfig().bot.commandOperator),
+    ) {
+        subcommand(
+            "eh",
+            usage = translator.translate("command.search.eh.usage", config.getConfig().bot.commandOperator),
+            executor = searchExecutor("eh", eh::search),
+        )
+        subcommand(
+            "jm",
+            usage = translator.translate("command.search.jm.usage", config.getConfig().bot.commandOperator),
+            executor = searchExecutor("jm", jm::search),
+        )
+    }
+
+    bot.registerCommand("checkin", usage = translator.translate("command.checkin.usage")) {
+        sender, _, _, messageID ->
+        val userId = sender.user.userID.toULong()
+        val (amount, success) = economic.userCheckIn(userId)
+        if (success) {
+            bot.reply(
+                sender,
+                messageID,
+                translator.translate("command.checkin.success", amount, economic.getBalance(userId))
+            )
+        } else {
+            bot.reply(
+                sender,
+                messageID,
+                translator.translate("command.checkin.already_done", economic.getBalance(userId))
+            )
+        }
+    }
+
+    bot.registerCommand("info", usage = translator.translate("command.info.usage")) {
+        sender, _, _, messageID ->
+        val user = economic.getUser(sender.user.userID.toULong())
+        val lastCheckIn = user.checkinAt.atZone(ZoneOffset.UTC)
+            .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss 'UTC'"))
+        bot.reply(
+            sender,
+            messageID,
+            translator.translate("command.info.content", user.role.name, user.balance, lastCheckIn)
+        )
+    }
 
     for (i in 1..config.getConfig().comicParallelCount) {
         async(Dispatchers.IO) {
@@ -517,5 +601,23 @@ fun main() = runBlocking {
     }
 }
 
+private fun formatSearchResult(
+    source: String,
+    result: ComicSearchResult<*>,
+    index: Int,
+    commandOperator: Char,
+): String = buildString {
+    appendLine("#$index ${result.title}")
+    result.subtitle?.takeIf(String::isNotBlank)?.let { appendLine(it) }
+    val target = if (source == "eh") result.url else "JM${result.id}"
+    appendLine(if (source == "eh") "E-Hentai" else "JM${result.id}")
+    result.pages?.let { appendLine("$it pages") }
+    result.rating?.let { appendLine("Rating: $it") }
+    if (result.tags.isNotEmpty()) {
+        appendLine(result.tags.take(8).joinToString(" · "))
+    }
+    appendLine(result.url)
+    append("$commandOperator get $source $target")
+}
 
-
+private const val SEARCH_RESULT_LIMIT = 10

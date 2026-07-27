@@ -4,8 +4,9 @@ UsefulBot 是一个使用 Kotlin 编写、通过 NapCat OneBot 11 WebSocket 接�
 
 ## 功能
 
-- `/eh`：下载 E-Hentai 或 ExHentai 画廊，生成带密码的 PDF。
-- `/jm`：通过 JM 车号或专辑链接下载 JMComic，自动还原分块图片并生成 PDF。
+- `/get eh`：下载 E-Hentai 或 ExHentai 画廊，生成带密码的 PDF。
+- `/get jm`：通过 JM 车号或专辑链接下载 JMComic，自动还原分块图片并生成 PDF，按最终 PDF 大小计费。
+- `/search`：搜索 E-Hentai/ExHentai 或 JMComic，以合并转发形式返回结果。
 - `/checkin`：每日签到领取 GP。
 - `/info`：查看账户信息和 GP 余额。
 - `/help`：查看当前可用命令。
@@ -97,9 +98,11 @@ java -jar ./implements/build/libs/implements-1.0.0.jar
 ## 命令示例
 
 ```text
-/eh https://e-hentai.org/g/123456/abcdef1234/
-/jm JM123456
-/jm https://18comic.vip/album/123456/
+/get eh https://e-hentai.org/g/123456/abcdef1234/
+/get jm JM123456
+/get jm https://18comic.vip/album/123456/
+/search eh language:chinese artist:example
+/search jm --page=2 中文 全彩
 /checkin
 /info
 ```
@@ -130,7 +133,8 @@ data/
 
 - 数据库文件位于 `data/gp.mv.db`，启动时会自动创建或补齐缺失表、字段和索引。
 - 用户余额变更与流水记录在同一事务中提交，扣费使用带余额条件的原子更新。
-- 每日签到按 UTC 日期判断；同一用户的并发请求只会成功一次。
+- 每日签到奖励为 `150～250 GP`（包含两端），按 UTC 日期判断；同一用户的并发请求只会成功一次。
+- JMComic 按 `floor(PDF 大小 MiB × 1.1)` 收取 GP；缓存文件使用相同规则，发送失败自动退款。
 - 流水按用户、创建时间建立组合索引，并默认按最新记录优先查询。
 - 应在机器人停止运行后备份或复制 `data/gp.mv.db`，避免得到不一致的文件级快照。
 

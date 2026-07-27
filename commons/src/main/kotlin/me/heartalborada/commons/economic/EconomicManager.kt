@@ -133,15 +133,20 @@ class EconomicManager(
         }
     }
 
-    fun userCheckIn(userId: ULong, from: Int = 50, to: Int = 100): Pair<Long, Boolean> {
-        require(from > 0) { "Check-in reward must be positive." }
-        require(to >= from) { "Check-in reward upper bound must not be smaller than the lower bound." }
+    fun userCheckIn(userId: ULong, minAward: Int = 150, maxAward: Int = 250): Pair<Long, Boolean> {
+        require(minAward > 0) { "Check-in reward must be positive." }
+        require(maxAward >= minAward) { "Check-in reward upper bound must not be smaller than the lower bound." }
+        require(maxAward < Int.MAX_VALUE) { "Check-in reward upper bound is too large." }
         return withUserLock(userId) {
             transaction(db) {
                 ensureUser(userId)
                 val now = clock.instant()
                 val start = now.atZone(ZoneOffset.UTC).toLocalDate().atStartOfDay(ZoneOffset.UTC).toInstant()
-                val award = if (from == to) from else awardGenerator(from, to)
+                val award = if (minAward == maxAward) {
+                    minAward
+                } else {
+                    awardGenerator(minAward, maxAward + 1)
+                }
                 val updatedRows = UsersTable.update({
                     (UsersTable.id eq userId) and
                         (UsersTable.checkinAt less start) and

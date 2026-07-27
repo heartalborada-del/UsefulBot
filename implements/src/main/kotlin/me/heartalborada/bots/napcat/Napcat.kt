@@ -1,7 +1,10 @@
 package me.heartalborada.bots.napcat
 
+import com.google.gson.Gson
 import com.google.gson.GsonBuilder
+import com.google.gson.JsonArray
 import com.google.gson.JsonNull
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.sun.nio.sctp.IllegalReceiveException
 import kotlinx.coroutines.*
@@ -13,6 +16,8 @@ import me.heartalborada.commons.bots.AbstractBot
 import me.heartalborada.commons.bots.MessageChain
 import me.heartalborada.commons.bots.dto.ApiCommon
 import me.heartalborada.commons.bots.dto.FileInfo
+import me.heartalborada.commons.bots.dto.ForwardMessageNode
+import me.heartalborada.commons.bots.dto.ForwardMessageResult
 import me.heartalborada.commons.bots.dto.UserInfo
 import me.heartalborada.commons.bots.events.EventBus
 import me.heartalborada.commons.bots.events.message.GroupMessageEvent
@@ -135,6 +140,58 @@ class Napcat(
                                     root.getAsJsonPrimitive(
                                         "message"
                                     ).asString
+                                }"
+                            )
+                        }
+                    } catch (e: Exception) {
+                        pendingReqs.remove(uuid)
+                        logger.error("An unexpected error occurred.", e)
+                        throw e
+                    }
+                }
+            }
+        }
+    }
+
+    override fun sendForwardMessage(
+        type: ChatType,
+        target: Long,
+        messages: List<ForwardMessageNode>,
+    ): ForwardMessageResult {
+        require(messages.isNotEmpty()) { "Forward messages must not be empty." }
+        logger.info("[SendForward] {} -> [{}] [{}] {} nodes", botID, type.name, target, messages.size)
+        return runBlocking {
+            withContext(botContext) {
+                mutex.withLock {
+                    val uuid = UUID.randomUUID().toString()
+                    try {
+                        val data = buildForwardMessageParams(type, target, messages, gson)
+                        val responseDeferred = CompletableDeferred<String>()
+                        pendingReqs[uuid] = responseDeferred
+                        val sent = apiWS?.send(gson.toJson(ApiCommon("send_forward_msg", uuid, data))) == true
+                        if (!sent) throw IllegalStateException("Failed to send forward message")
+                        val response = withTimeoutOrNull(5000.milliseconds) {
+                            responseDeferred.await().also {
+                                pendingReqs.remove(uuid)
+                            }
+                        }.also { pendingReqs.remove(uuid) }
+                        if (response == null) throw IOException("Timeout")
+
+                        val root = JsonParser.parseString(response).asJsonObject
+                        when (val code = root.getAsJsonPrimitive("retcode").asInt) {
+                            0 -> {
+                                val responseData = root.getAsJsonObject("data")
+                                return@withContext ForwardMessageResult(
+                                    messageID = responseData.getAsJsonPrimitive("message_id").asLong,
+                                    resourceID = responseData.get("res_id")
+                                        ?.takeUnless { it.isJsonNull }
+                                        ?.asString,
+                                )
+                            }
+
+                            else -> throw IllegalReceiveException(
+                                "Invalid response code: $code, message: ${
+                                    root.getAsJsonPrimitive("message").asString
                                 }"
                             )
                         }
@@ -657,6 +714,51 @@ class Napcat(
                 return
             }
             logger.error("An unexpected error occurred.", t)
+        }
+    }
+}
+
+internal fun buildForwardMessageParams(
+    type: ChatType,
+    target: Long,
+    messages: List<ForwardMessageNode>,
+    gson: Gson,
+): Map<String, Any> {
+    require(messages.isNotEmpty()) { "Forward messages must not be empty." }
+    val params = mutableMapOf<String, Any>(
+        "message_type" to when (type) {
+            ChatType.PRIVATE -> "private"
+            ChatType.GROUP -> "group"
+            else -> throw IllegalArgumentException("Invalid chat type")
+        },
+        "messages" to JsonArray().apply {
+            messages.forEach { node ->
+                add(
+                    JsonObject().apply {
+                        addProperty("type", "node")
+                        add("data", node.toJson(gson))
+                    }
+                )
+            }
+        },
+    )
+    when (type) {
+        ChatType.PRIVATE -> params["user_id"] = target
+        ChatType.GROUP -> params["group_id"] = target
+    }
+    return params
+}
+
+private fun ForwardMessageNode.toJson(gson: Gson): JsonObject = JsonObject().apply {
+    when (this@toJson) {
+        is ForwardMessageNode.ExistingMessage -> {
+            addProperty("id", messageID)
+        }
+
+        is ForwardMessageNode.CustomMessage -> {
+            addProperty("user_id", userID)
+            addProperty("nickname", nickname)
+            add("content", gson.toJsonTree(content, MessageChain::class.java))
         }
     }
 }

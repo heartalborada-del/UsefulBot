@@ -2,6 +2,8 @@ package me.heartalborada.commons.bots
 
 import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.dto.MessageSender
+import me.heartalborada.commons.bots.dto.ForwardMessageNode
+import me.heartalborada.commons.bots.dto.ForwardMessageResult
 import me.heartalborada.commons.bots.dto.UserInfo
 import me.heartalborada.commons.bots.events.EventBus
 import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
@@ -13,6 +15,7 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -59,6 +62,7 @@ class AbstractBotCommandTest {
         assertIs<Reply>(unknown[0])
         assertEquals(10L, (unknown[0] as Reply).id)
         assertTrue((unknown[1] as PlainText).text.contains("Unknown command"))
+        assertTrue((unknown[1] as PlainText).text.contains("Available commands"))
 
         bot.broadcast("/fail", messageID = 11L)
         val failure = bot.sent.poll(2, TimeUnit.SECONDS)
@@ -79,16 +83,74 @@ class AbstractBotCommandTest {
         assertTrue((reply[1] as PlainText).text.startsWith("未知命令"))
     }
 
+    @Test
+    fun `subcommands dispatch without leaking their name into arguments`() {
+        val bot = FakeBot()
+        val executed = CompletableFuture<Pair<String, MessageChain>>()
+        bot.registerCommand(
+            "get",
+            usage = "/get <eh|jm> <target>",
+        ) {
+            subcommand("eh", "ex", usage = "/get eh <gallery URL>") { _, command, args, _ ->
+                executed.complete(command to args)
+            }
+        }
+        bot.connect()
+
+        bot.broadcast("/get EX https://example.test/g/1/token/", messageID = 13L)
+
+        val (command, args) = executed.get(2, TimeUnit.SECONDS)
+        assertEquals("eh", command)
+        assertEquals("https://example.test/g/1/token/", args.toString())
+    }
+
+    @Test
+    fun `missing or unknown subcommands show scoped help`() {
+        val bot = FakeBot()
+        bot.registerCommand(
+            "get",
+            usage = "/get <eh|jm> <target>",
+        ) {
+            subcommand("eh", usage = "/get eh <gallery URL>") { _, _, _, _ -> }
+            subcommand("jm", usage = "/get jm <JM ID>") { _, _, _, _ -> }
+        }
+        bot.connect()
+
+        bot.broadcast("/get", messageID = 14L)
+        val missingReply = bot.sent.poll(2, TimeUnit.SECONDS)
+        val invalidText = (missingReply[1] as PlainText).text
+        assertTrue(invalidText.contains("/get <eh|jm> <target>"))
+        assertTrue(invalidText.contains("Available subcommands"))
+        assertTrue(invalidText.contains("/get eh <gallery URL>"))
+        assertTrue(invalidText.contains("/get jm <JM ID>"))
+
+        bot.broadcast("/get unsupported", messageID = 15L)
+        val invalidReply = bot.sent.poll(2, TimeUnit.SECONDS)
+        assertEquals(invalidText, (invalidReply[1] as PlainText).text)
+
+        bot.broadcast("/help get", messageID = 16L)
+        val helpReply = bot.sent.poll(2, TimeUnit.SECONDS)
+        assertEquals(invalidText, (helpReply[1] as PlainText).text)
+    }
+
+    @Test
+    fun `invalid command trees fail during registration`() {
+        val bot = FakeBot()
+
+        assertFailsWith<IllegalArgumentException> {
+            bot.registerCommand("empty", usage = "/empty") {}
+        }
+        assertFailsWith<IllegalArgumentException> {
+            bot.registerCommand("get", usage = "/get <source>") {
+                subcommand("eh", "gallery", usage = "/get eh") { _, _, _, _ -> }
+                subcommand("gallery", usage = "/get jm") { _, _, _, _ -> }
+            }
+        }
+    }
+
     private fun executor(
         block: suspend (MessageSender, String, MessageChain, Long) -> Unit
-    ): CommandExecutor = object : CommandExecutor {
-        override suspend fun execute(
-            sender: MessageSender,
-            command: String,
-            args: MessageChain,
-            messageID: Long
-        ) = block(sender, command, args, messageID)
-    }
+    ): CommandExecutor = CommandExecutor(block)
 
     private inner class FakeBot(translator: Translator = Translator()) :
         AbstractBot(commandStartWithAt = false, translator = translator) {
@@ -101,6 +163,12 @@ class AbstractBotCommandTest {
             sent.add(message)
             return 1L
         }
+
+        override fun sendForwardMessage(
+            type: ChatType,
+            target: Long,
+            messages: List<ForwardMessageNode>,
+        ): ForwardMessageResult = ForwardMessageResult(1L)
 
         override fun recallMessage(messageID: Long): Boolean = true
 

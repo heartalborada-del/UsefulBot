@@ -7,6 +7,8 @@ import com.google.gson.reflect.TypeToken
 import me.heartalborada.commons.comic.AbstractComicProvider
 import me.heartalborada.commons.comic.model.ArchiveInformation
 import me.heartalborada.commons.comic.model.ComicInformation
+import me.heartalborada.commons.comic.model.ComicSearchPage
+import me.heartalborada.commons.comic.model.ComicSearchResult
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Cookie
 import okhttp3.OkHttpClient
@@ -104,6 +106,113 @@ class JMComic(
         val match = TARGET_ID_REGEX.find(input)
             ?: throw IllegalArgumentException("Invalid JMComic target: $url")
         return match.groupValues.drop(1).first(String::isNotEmpty)
+    }
+
+    override fun search(keyword: String, page: Int): ComicSearchPage<String> {
+        require(keyword.isNotBlank()) { "Search keyword must not be blank." }
+        require(page > 0) { "Search page must be greater than zero." }
+        val path = buildSearchPath(keyword.trim(), page)
+        return runCatching {
+            val data = requestApi(path)
+            val redirectAlbumID = data.string("redirect_aid")?.takeIf(String::isNotBlank)
+            if (redirectAlbumID == null) {
+                parseApiSearch(data, page)
+            } else {
+                val album = getAlbum(redirectAlbumID)
+                ComicSearchPage(
+                    results = listOf(album.toSearchResult()),
+                    page = page,
+                    total = 1,
+                )
+            }
+        }.getOrElse { apiError ->
+            runCatching { parseSearchHtml(requestHtml(path.replaceFirst("/search", "/search/photos")), page) }
+                .getOrElse { htmlError ->
+                    htmlError.addSuppressed(apiError)
+                    throw htmlError
+                }
+        }
+    }
+
+    internal fun buildSearchPath(keyword: String, page: Int): String {
+        val url = "https://localhost/search".toHttpUrl().newBuilder()
+            .addQueryParameter("main_tag", "0")
+            .addQueryParameter("search_query", keyword)
+            .addQueryParameter("page", page.toString())
+            .addQueryParameter("o", SEARCH_ORDER_LATEST)
+            .addQueryParameter("t", SEARCH_TIME_ALL)
+            .build()
+        return "${url.encodedPath}?${url.encodedQuery}"
+    }
+
+    internal fun parseApiSearch(data: JsonObject, page: Int = 1): ComicSearchPage<String> {
+        val total = data.string("total")?.toIntOrNull() ?: 0
+        val results = data.arrayObjects("content").mapNotNull { item ->
+            val id = item.string("id")?.takeIf(String::isNotBlank) ?: return@mapNotNull null
+            val title = item.string("name")?.takeIf(String::isNotBlank) ?: return@mapNotNull null
+            val authors = item.stringList("author")
+            val tags = item.stringList("tags")
+            ComicSearchResult(
+                id = id,
+                title = title,
+                url = albumUrl(id),
+                subtitle = authors.joinToString(", ").takeIf(String::isNotBlank),
+                cover = searchCoverUrl(id, item.string("image")),
+                tags = tags,
+            )
+        }
+        return ComicSearchPage(
+            results = results,
+            page = page,
+            total = total,
+            hasNextPage = page * SEARCH_PAGE_SIZE < total,
+        )
+    }
+
+    internal fun parseSearchHtml(html: String, page: Int = 1): ComicSearchPage<String> {
+        val document = Jsoup.parse(decodeEmbeddedHtml(html), "https://${webDomain()}")
+        val results = document.select("a[href*=/album/]")
+            .mapNotNull { link ->
+                val url = link.attr("abs:href").ifBlank { link.attr("href") }
+                val id = runCatching { parseUrl(url) }.getOrNull() ?: return@mapNotNull null
+                val container = link.closest(".well") ?: link.parent()
+                val title = link.attr("title").takeIf(String::isNotBlank)
+                    ?: link.selectFirst("img[alt]")?.attr("alt")?.takeIf(String::isNotBlank)
+                    ?: link.text().takeIf(String::isNotBlank)
+                    ?: container?.selectFirst("[title]")?.attr("title")?.takeIf(String::isNotBlank)
+                    ?: return@mapNotNull null
+                val tags = container?.select("a[href*=/tags/], a[href*=/search/photos?search_query=]")
+                    ?.map { it.text().trim() }
+                    ?.filter(String::isNotEmpty)
+                    ?.distinct()
+                    .orEmpty()
+                val author = container?.selectFirst("a[href*=/author/], a[href*='main_tag=2']")
+                    ?.text()
+                    ?.takeIf(String::isNotBlank)
+                val image = link.selectFirst("img") ?: container?.selectFirst("img")
+                val cover = image?.attr("data-original")?.takeIf(String::isNotBlank)
+                    ?: image?.attr("src")?.takeIf(String::isNotBlank)
+
+                ComicSearchResult(
+                    id = id,
+                    title = title,
+                    url = albumUrl(id),
+                    subtitle = author,
+                    cover = searchCoverUrl(id, cover),
+                    tags = tags,
+                )
+            }
+            .distinctBy { it.id }
+        val hasNextPage = document.select(".pagination a[href]")
+            .any { link ->
+                link.attr("href").let { "page=${page + 1}" in it } ||
+                    link.text().trim().equals("next", ignoreCase = true)
+            }
+        return ComicSearchPage(
+            results = results,
+            page = page,
+            hasNextPage = hasNextPage,
+        )
     }
 
     override fun getTargetInformation(target: String): ComicInformation<String> {
@@ -255,6 +364,33 @@ class JMComic(
     private fun fetchApiPhoto(photoId: String): JmPhoto {
         val photo = requestApi("/chapter?id=$photoId")
         return parseApiPhoto(photo, requestScrambleId(photoId))
+    }
+
+    private fun JmAlbum.toSearchResult(): ComicSearchResult<String> {
+        return ComicSearchResult(
+            id = id,
+            title = title,
+            url = albumUrl(id),
+            subtitle = authors.joinToString(", ").takeIf(String::isNotBlank),
+            cover = cover,
+            tags = tags,
+            pages = pageCount.takeIf { it > 0 },
+        )
+    }
+
+    private fun albumUrl(albumId: String): String = "https://${webDomain()}/album/$albumId/"
+
+    private fun webDomain(): String = configuredDomains.firstOrNull() ?: DEFAULT_WEB_DOMAINS.first()
+
+    private fun searchCoverUrl(albumId: String, value: String?): String {
+        val cover = value?.trim().orEmpty()
+        return when {
+            cover.isBlank() -> "https://${configuredImageDomains.first()}/media/albums/${albumId}_3x4.jpg"
+            cover.startsWith("https://") || cover.startsWith("http://") -> cover
+            cover.startsWith("//") -> "https:$cover"
+            cover.startsWith("/") -> "https://${configuredImageDomains.first()}$cover"
+            else -> "https://${configuredImageDomains.first()}/$cover"
+        }
     }
 
     private fun requestScrambleId(photoId: String): Int {
@@ -664,6 +800,9 @@ class JMComic(
         private const val APP_TOKEN_SECRET = "185Hcomic3PAPP7R"
         private const val APP_TOKEN_SECRET_2 = "18comicAPPContent"
         private const val APP_DATA_SECRET = "185Hcomic3PAPP7R"
+        private const val SEARCH_ORDER_LATEST = "mr"
+        private const val SEARCH_TIME_ALL = "a"
+        private const val SEARCH_PAGE_SIZE = 80
         private const val API_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 9; V1938CT Build/PQ3A.190705.11211812; wv) " +
                 "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 " +

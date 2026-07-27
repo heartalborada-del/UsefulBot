@@ -3,11 +3,14 @@ package me.heartalborada.commons.bots
 import kotlinx.coroutines.*
 import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.dto.FileInfo
+import me.heartalborada.commons.bots.dto.ForwardMessageNode
+import me.heartalborada.commons.bots.dto.ForwardMessageResult
 import me.heartalborada.commons.bots.dto.MessageSender
 import me.heartalborada.commons.bots.events.EventBus
 import me.heartalborada.commons.bots.events.message.GroupMessageEvent
 import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
 import me.heartalborada.commons.commands.CommandExecutor
+import me.heartalborada.commons.commands.SubcommandBuilder
 import me.heartalborada.commons.i18n.Translator
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
@@ -28,6 +31,17 @@ abstract class AbstractBot(
         CoroutineScope(SupervisorJob() + Dispatchers.IO + exceptionHandler + CoroutineName("BotExecutorScope"))
 
     private class CommandDefinition(
+        val usage: String,
+        val route: CommandRoute,
+    )
+
+    private sealed interface CommandRoute {
+        class Leaf(val executor: CommandExecutor) : CommandRoute
+        class Branch(val subcommands: Map<String, RegisteredSubcommand>) : CommandRoute
+    }
+
+    private class RegisteredSubcommand(
+        val canonicalName: String,
         val executor: CommandExecutor,
         val usage: String,
     )
@@ -36,32 +50,17 @@ abstract class AbstractBot(
     private var isRegistered: Boolean = false
 
     init {
-        registerCommand(
-            commands = arrayOf("help", "h"),
-            executor = object : CommandExecutor {
-                override suspend fun execute(
-                    sender: MessageSender,
-                    command: String,
-                    args: MessageChain,
-                    messageID: Long
-                ) {
-                    val definitions = commandMap.values.distinct()
-                    val helpText = buildString {
-                        appendLine(translator.translate("command.help.header"))
-                        definitions.forEach { definition ->
-                            val names = commandMap
-                                .filterValues { it === definition }
-                                .keys
-                                .joinToString(", ") { "$commandOperator$it" }
-                            append("  $names — ${definition.usage}")
-                            if (definition !== definitions.last()) appendLine()
-                        }
-                    }
-                    reply(sender, messageID, helpText)
-                }
-            },
-            usage = translator.translate("command.help.usage")
-        )
+        registerCommand("help", "h", usage = translator.translate("command.help.usage")) {
+            sender, _, args, messageID ->
+            val requestedCommand = args.toString()
+                .trim()
+                .substringBefore(commandDivider)
+                .lowercase(Locale.ROOT)
+            val helpText = commandMap[requestedCommand]
+                ?.let(::buildCommandHelp)
+                ?: buildGlobalHelp()
+            reply(sender, messageID, helpText)
+        }
     }
 
     open fun close(): Boolean {
@@ -84,6 +83,19 @@ abstract class AbstractBot(
 
     abstract fun sendMessage(type: ChatType, id: Long, message: MessageChain): Long
 
+    /**
+     * Sends a merged-forward message to a private chat or group.
+     *
+     * @param type target chat type; only [ChatType.PRIVATE] and [ChatType.GROUP] are supported
+     * @param target user ID or group ID, according to [type]
+     * @param messages nodes containing either an existing message ID or custom content
+     */
+    abstract fun sendForwardMessage(
+        type: ChatType,
+        target: Long,
+        messages: List<ForwardMessageNode>,
+    ): ForwardMessageResult
+
     abstract fun recallMessage(messageID: Long): Boolean
 
     /**
@@ -102,12 +114,64 @@ abstract class AbstractBot(
      */
     abstract fun sendFile(type: ChatType, target: Long, name: String, file: File): Boolean
 
-    fun registerCommand(vararg commands: String, executor: CommandExecutor, usage: String) {
-        require(commands.isNotEmpty()) { "At least one command name is required." }
-        require(usage.isNotBlank()) { "Command usage must not be blank." }
+    fun registerCommand(vararg commands: String, usage: String, executor: CommandExecutor) {
+        registerCommandDefinition(
+            commands = commands,
+            definition = CommandDefinition(
+                usage = usage.trim(),
+                route = CommandRoute.Leaf(executor),
+            ),
+        )
+    }
 
-        val normalizedCommands = commands
-            .map { it.trim().lowercase(Locale.ROOT) }
+    fun registerCommand(
+        vararg commands: String,
+        usage: String,
+        configure: SubcommandBuilder.() -> Unit,
+    ) {
+        val subcommands = SubcommandBuilder().apply(configure).build()
+        require(subcommands.isNotEmpty()) { "At least one subcommand is required." }
+        val subcommandMap = linkedMapOf<String, RegisteredSubcommand>()
+        subcommands.forEach { subcommand ->
+            require(subcommand.commands.isNotEmpty()) { "At least one subcommand name is required." }
+            require(subcommand.usage.isNotBlank()) { "Subcommand usage must not be blank." }
+            val normalizedNames = normalizeCommandNames(subcommand.commands)
+            normalizedNames.firstOrNull(subcommandMap::containsKey)?.let {
+                throw IllegalArgumentException("Subcommand $it is already registered.")
+            }
+            val registered = RegisteredSubcommand(
+                canonicalName = normalizedNames.first(),
+                executor = subcommand.executor,
+                usage = subcommand.usage.trim(),
+            )
+            normalizedNames.forEach { subcommandMap[it] = registered }
+        }
+        registerCommandDefinition(
+            commands = commands,
+            definition = CommandDefinition(
+                usage = usage.trim(),
+                route = CommandRoute.Branch(subcommandMap),
+            ),
+        )
+    }
+
+    private fun registerCommandDefinition(
+        commands: Array<out String>,
+        definition: CommandDefinition,
+    ) {
+        require(commands.isNotEmpty()) { "At least one command name is required." }
+        require(definition.usage.isNotBlank()) { "Command usage must not be blank." }
+        val normalizedCommands = normalizeCommandNames(commands.toList())
+
+        normalizedCommands.firstOrNull(commandMap::containsKey)?.let {
+            throw IllegalArgumentException("Command $it is already registered.")
+        }
+
+        normalizedCommands.forEach { commandMap[it] = definition }
+    }
+
+    private fun normalizeCommandNames(commands: Collection<String>): List<String> =
+        commands.map { it.trim().lowercase(Locale.ROOT) }
             .also { names ->
                 require(names.none(String::isBlank)) { "Command name must not be blank." }
                 require(names.distinct().size == names.size) { "Command aliases must be unique." }
@@ -115,14 +179,6 @@ abstract class AbstractBot(
                     "Command name must not contain the operator or divider."
                 }
             }
-
-        normalizedCommands.firstOrNull(commandMap::containsKey)?.let {
-            throw IllegalArgumentException("Command $it is already registered.")
-        }
-
-        val definition = CommandDefinition(executor, usage.trim())
-        normalizedCommands.forEach { commandMap[it] = definition }
-    }
 
     fun unregisterCommand(vararg commands: String) {
         val normalizedCommands = commands.map { it.trim().lowercase(Locale.ROOT) }
@@ -182,25 +238,36 @@ abstract class AbstractBot(
             reply(
                 sender,
                 messageID,
-                translator.translate(
-                    "command.unknown",
-                    "$commandOperator$commandName",
-                    commandOperator
-                )
+                translator.translate("command.unknown", "$commandOperator$commandName") +
+                    "\n\n" +
+                    buildGlobalHelp()
             )
             return true
         }
 
-        val args = MessageChain()
+        val commandArguments = MessageChain()
         val firstArgument = commandBody.substringAfter(divider, "").trimStart(divider)
         if (firstArgument.isNotEmpty()) {
-            args.add(PlainText(firstArgument))
+            commandArguments.add(PlainText(firstArgument))
         }
-        messageChain.drop(1).forEach(args::add)
+        messageChain.drop(1).forEach(commandArguments::add)
+
+        val execution = when (val route = definition.route) {
+            is CommandRoute.Leaf -> CommandExecution(
+                executor = route.executor,
+                command = commandName,
+                arguments = commandArguments,
+            )
+            is CommandRoute.Branch -> resolveSubcommand(route, commandArguments)
+        }
+        if (execution == null) {
+            reply(sender, messageID, buildCommandHelp(definition))
+            return true
+        }
 
         commonScope.launch {
             try {
-                definition.executor.execute(sender, commandName, args, messageID)
+                execution.executor.execute(sender, execution.command, execution.arguments, messageID)
             } catch (exception: CancellationException) {
                 throw exception
             } catch (exception: Exception) {
@@ -220,6 +287,71 @@ abstract class AbstractBot(
             }
         }
         return true
+    }
+
+    private data class CommandExecution(
+        val executor: CommandExecutor,
+        val command: String,
+        val arguments: MessageChain,
+    )
+
+    private fun resolveSubcommand(
+        route: CommandRoute.Branch,
+        arguments: MessageChain,
+    ): CommandExecution? {
+        val firstText = (arguments.firstOrNull() as? PlainText)?.text?.trimStart() ?: return null
+        val subcommandName = firstText
+            .substringBefore(commandDivider)
+            .trim()
+            .lowercase(Locale.ROOT)
+        val subcommand = route.subcommands[subcommandName] ?: return null
+        val remainingArguments = MessageChain()
+        val remainingText = firstText.substringAfter(commandDivider, "").trimStart(commandDivider)
+        if (remainingText.isNotEmpty()) {
+            remainingArguments.add(PlainText(remainingText))
+        }
+        arguments.drop(1).forEach(remainingArguments::add)
+        return CommandExecution(
+            executor = subcommand.executor,
+            command = subcommand.canonicalName,
+            arguments = remainingArguments,
+        )
+    }
+
+    private fun buildGlobalHelp(): String {
+        val definitions = commandMap.values.distinct()
+        return buildString {
+            appendLine(translator.translate("command.help.header"))
+            definitions.forEachIndexed { index, definition ->
+                val names = commandMap
+                    .filterValues { it === definition }
+                    .keys
+                    .joinToString(", ") { "$commandOperator$it" }
+                append("  $names — ${definition.usage}")
+                val route = definition.route
+                if (route is CommandRoute.Branch) {
+                    route.subcommands.values.distinct().forEach { subcommand ->
+                        appendLine()
+                        append("    ${subcommand.usage}")
+                    }
+                }
+                if (index != definitions.lastIndex) appendLine()
+            }
+        }
+    }
+
+    private fun buildCommandHelp(definition: CommandDefinition): String {
+        val route = definition.route
+        if (route !is CommandRoute.Branch) return definition.usage
+        val subcommands = route.subcommands.values.distinct()
+        return buildString {
+            appendLine(definition.usage)
+            appendLine(translator.translate("command.help.subcommands"))
+            subcommands.forEachIndexed { index, subcommand ->
+                append("  ${subcommand.usage}")
+                if (index != subcommands.lastIndex) appendLine()
+            }
+        }
     }
 
     private fun reply(sender: MessageSender, messageID: Long, text: String) {

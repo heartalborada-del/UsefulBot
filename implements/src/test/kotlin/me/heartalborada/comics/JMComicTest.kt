@@ -1,6 +1,7 @@
 package me.heartalborada.comics
 
 import com.google.gson.JsonParser
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.awt.Color
 import java.awt.image.BufferedImage
 import java.security.MessageDigest
@@ -104,6 +105,71 @@ class JMComicTest {
         )
         assertEquals(220980, photo.scrambleId)
         assertEquals(listOf("00001.jpg", "00002.webp"), photo.fileNames)
+    }
+
+    @Test
+    fun `builds and parses mobile API search`() {
+        val path = provider.buildSearchPath("MANA 中文", 2)
+        val url = "https://example.test$path".toHttpUrl()
+        assertEquals("0", url.queryParameter("main_tag"))
+        assertEquals("MANA 中文", url.queryParameter("search_query"))
+        assertEquals("2", url.queryParameter("page"))
+        assertEquals("mr", url.queryParameter("o"))
+        assertEquals("a", url.queryParameter("t"))
+
+        val page = provider.parseApiSearch(
+            JsonParser.parseString(
+                """
+                    {
+                      "search_query":"MANA",
+                      "total":"81",
+                      "content":[
+                        {
+                          "id":"441923",
+                          "author":"MANA",
+                          "name":"Example Album",
+                          "tags":["全彩","中文"],
+                          "image":""
+                        }
+                      ]
+                    }
+                """.trimIndent()
+            ).asJsonObject,
+            page = 1,
+        )
+
+        assertEquals(81, page.total)
+        assertEquals("441923", page.results.single().id)
+        assertEquals("Example Album", page.results.single().title)
+        assertEquals("MANA", page.results.single().subtitle)
+        assertEquals(listOf("全彩", "中文"), page.results.single().tags)
+        assertEquals("https://18comic.example/album/441923/", page.results.single().url)
+        assertEquals(true, page.hasNextPage)
+    }
+
+    @Test
+    fun `parses web search fallback`() {
+        val page = provider.parseSearchHtml(
+            """
+                <html><body>
+                  <div class="well">
+                    <a href="/album/123456/" title="Web Album">
+                      <img data-original="//cdn.example/media/albums/123456_3x4.jpg">
+                    </a>
+                    <a href="/author/example">Author A</a>
+                    <a href="/tags/chinese">中文</a>
+                  </div>
+                  <ul class="pagination"><li><a href="/search/photos?page=2">Next</a></li></ul>
+                </body></html>
+            """.trimIndent(),
+        )
+
+        assertEquals("123456", page.results.single().id)
+        assertEquals("Web Album", page.results.single().title)
+        assertEquals("Author A", page.results.single().subtitle)
+        assertEquals(listOf("中文"), page.results.single().tags)
+        assertEquals("https://cdn.example/media/albums/123456_3x4.jpg", page.results.single().cover)
+        assertEquals(true, page.hasNextPage)
     }
 
     @Test

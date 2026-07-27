@@ -114,4 +114,20 @@ class EconomicManagerTest {
         assertEquals(1, manager.queryRecord(userId).size)
         assertEquals(Pair(0L, false), manager.userCheckIn(userId))
     }
+
+    @Test
+    fun `default check-in reward includes both 150 and 250`() {
+        var requestedRange: Pair<Int, Int>? = null
+        val manager = EconomicManager(
+            database(),
+            Clock.fixed(Instant.parse("2026-07-27T08:00:00Z"), ZoneOffset.UTC),
+            awardGenerator = { from, until ->
+                requestedRange = from to until
+                until - 1
+            },
+        )
+
+        assertEquals(Pair(250L, true), manager.userCheckIn(10006uL))
+        assertEquals(150 to 251, requestedRange)
+    }
 }

@@ -5,9 +5,12 @@ import com.google.gson.JsonParser
 import me.heartalborada.commons.comic.AbstractComicProvider
 import me.heartalborada.commons.comic.model.ArchiveInformation
 import me.heartalborada.commons.comic.model.ComicInformation
+import me.heartalborada.commons.comic.model.ComicSearchPage
+import me.heartalborada.commons.comic.model.ComicSearchResult
 import me.heartalborada.commons.okhttp.CookieStorageProvider
 import me.heartalborada.commons.okhttp.RetryInterceptor
 import okhttp3.*
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.Jsoup
@@ -85,6 +88,112 @@ class EHentai(
     private val variableRegex = Regex("var\\s+(\\w+)\\s*=\\s*(.*?);")
     private val imageUrlRegex =
         Regex("https?://([0-9a-zA-Z.]+)hath.network(:\\d+|)([0-9a-zA-Z-=;_/]+)\\.(?:jpg|jpeg|gif|png|webp)")
+
+    override fun search(keyword: String, page: Int): ComicSearchPage<Pair<String, String>> {
+        require(keyword.isNotBlank()) { "Search keyword must not be blank." }
+        require(page > 0) { "Search page must be greater than zero." }
+        var url = "$baseUrl/".toHttpUrl().newBuilder()
+            .addQueryParameter("f_search", keyword.trim())
+            .build()
+        for (currentPage in 1..page) {
+            val html = okHttpClient.newCall(Request.Builder().url(url).build()).execute().use { it.precheck() }
+            val result = parseSearchHtml(html, currentPage)
+            if (currentPage == page) return result
+            val nextUrl = Jsoup.parse(html, baseUrl)
+                .selectFirst("a#dnext[href]:not(.nop)")
+                ?.attr("abs:href")
+                ?.takeIf(String::isNotBlank)
+                ?: return ComicSearchPage(results = emptyList(), page = page)
+            url = nextUrl.toHttpUrl()
+        }
+        return ComicSearchPage(results = emptyList(), page = page)
+    }
+
+    internal fun parseSearchHtml(html: String, page: Int = 1): ComicSearchPage<Pair<String, String>> {
+        val document = Jsoup.parse(html, baseUrl)
+        val containers = document.select(
+            "table.itg.gltc > tbody > tr, " +
+                "table.itg.glte > tbody > tr, " +
+                "table.itg.gltm > tbody > tr, " +
+                "div.gl1t"
+        )
+        val results = containers.mapNotNull { item ->
+            val linkElement = item.select("a[href]").firstOrNull { galleryUrlRegex.containsMatchIn(it.attr("abs:href")) }
+                ?: return@mapNotNull null
+            val url = linkElement.attr("abs:href").ifBlank { linkElement.attr("href") }
+            val target = runCatching { parseUrl(url) }.getOrNull() ?: return@mapNotNull null
+            val title = item.selectFirst(".glink")?.text()
+                ?.takeIf(String::isNotBlank)
+                ?: linkElement.attr("title").takeIf(String::isNotBlank)
+                ?: linkElement.text().takeIf(String::isNotBlank)
+                ?: return@mapNotNull null
+            val image = item.selectFirst("img")
+            val cover = image?.attr("data-src")?.takeIf(String::isNotBlank)
+                ?: image?.attr("src")?.takeIf(String::isNotBlank)
+            val tags = item.select("div.gt[title], div.gtl[title]")
+                .map { it.attr("title").trim() }
+                .filter(String::isNotEmpty)
+                .distinct()
+            val uploader = item.select("a[href]")
+                .firstOrNull {
+                    val href = it.attr("href")
+                    "/uploader/" in href || "f_search=uploader" in href
+                }
+                ?.text()
+                ?.takeIf(String::isNotBlank)
+            val pages = Regex("(\\d+)\\s+pages?", RegexOption.IGNORE_CASE)
+                .find(item.text())
+                ?.groupValues
+                ?.get(1)
+                ?.toIntOrNull()
+            val rating = item.selectFirst("div.ir")
+                ?.attr("style")
+                ?.let(::parseRating)
+
+            ComicSearchResult(
+                id = target,
+                title = title,
+                url = url,
+                subtitle = uploader,
+                cover = cover,
+                tags = tags,
+                pages = pages,
+                rating = rating,
+            )
+        }.distinctBy { it.id }
+
+        val hasNextPage = document.selectFirst("a#dnext[href]")
+            ?.hasClass("nop")
+            ?.not()
+            ?: false
+        return ComicSearchPage(
+            results = results,
+            page = page,
+            hasNextPage = hasNextPage,
+        )
+    }
+
+    private fun parseRating(style: String): Double? {
+        val position = Regex("background-position\\s*:\\s*(-?\\d+)px\\s+(-?\\d+)px")
+            .find(style)
+            ?.groupValues
+            ?: return null
+        val x = position[1].toIntOrNull() ?: return null
+        val y = position[2].toIntOrNull() ?: return null
+        return when (x to y) {
+            0 to -1 -> 5.0
+            0 to -21 -> 4.5
+            -16 to -1 -> 4.0
+            -16 to -21 -> 3.5
+            -32 to -1 -> 3.0
+            -32 to -21 -> 2.5
+            -48 to -1 -> 2.0
+            -48 to -21 -> 1.5
+            -64 to -1 -> 1.0
+            -64 to -21 -> 0.5
+            else -> null
+        }
+    }
 
     override fun parseUrl(url: String): Pair<String, String> {
         val matchResult = galleryUrlRegex.find(url)
