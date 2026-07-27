@@ -108,7 +108,7 @@ class SizeBoundedPdfSplitter {
         target.parentFile?.mkdirs()
         load(source, password).use { document ->
             document.isAllSecurityToBeRemoved = true
-            document.save(target)
+            save(document, target)
         }
     }
 
@@ -202,7 +202,13 @@ class SizeBoundedPdfSplitter {
                     )
                 )
             }
-            part.save(target)
+            save(part, target)
+        }
+    }
+
+    private fun save(document: PDDocument, target: File) {
+        target.outputStream().buffered().use { output ->
+            document.save(output)
         }
     }
 
