@@ -9,6 +9,7 @@ data class ConfigData @JvmOverloads constructor(
     @SerializedName("Ehentai") val eHentai: EHentai = EHentai(),
     @SerializedName("JMComic") val jmComic: JMComic = JMComic(),
     @SerializedName("ComicParallelCount") val comicParallelCount: Int = 2,
+    @SerializedName("BlurImages") val blurImages: Boolean = false,
 ) {
     data class Bot @JvmOverloads constructor(
         @SerializedName("Adapter") val adapter: Adapter = Adapter.NAPCAT,
@@ -78,6 +79,6 @@ data class ConfigData @JvmOverloads constructor(
     )
 
     companion object {
-        const val CURRENT_VERSION = 2
+        const val CURRENT_VERSION = 3
     }
 }

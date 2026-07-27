@@ -48,6 +48,7 @@ abstract class AbstractBot(
     )
 
     private val commandMap = linkedMapOf<String, CommandDefinition>()
+    private val beforeCommandExecutors = mutableListOf<CommandExecutor>()
     private var isRegistered: Boolean = false
 
     init {
@@ -67,6 +68,7 @@ abstract class AbstractBot(
     open fun close(): Boolean {
         commonScope.cancel()
         commandMap.clear()
+        beforeCommandExecutors.clear()
         return true
     }
 
@@ -132,6 +134,15 @@ abstract class AbstractBot(
                 route = CommandRoute.Leaf(executor),
             ),
         )
+    }
+
+    /**
+     * Registers an executor that runs before every successfully resolved command.
+     *
+     * Unknown commands and invalid subcommands do not trigger these executors.
+     */
+    fun beforeCommandExecution(executor: CommandExecutor) {
+        beforeCommandExecutors += executor
     }
 
     fun registerCommand(
@@ -277,6 +288,9 @@ abstract class AbstractBot(
 
         commonScope.launch {
             try {
+                beforeCommandExecutors.forEach {
+                    it.execute(sender, execution.command, execution.arguments, messageID)
+                }
                 execution.executor.execute(sender, execution.command, execution.arguments, messageID)
             } catch (exception: CancellationException) {
                 throw exception

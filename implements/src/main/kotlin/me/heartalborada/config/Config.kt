@@ -68,6 +68,11 @@ class Config(private val configFile: File) : AbstractConfiguration<ConfigData>()
 }
 
 internal object ConfigMigration {
+    private val defaultConfig = GsonBuilder()
+        .create()
+        .toJsonTree(ConfigData())
+        .asJsonObject
+
     fun upgrade(root: JsonObject, sourceVersion: Int): Boolean {
         if (sourceVersion >= ConfigData.CURRENT_VERSION) {
             return false
@@ -77,11 +82,13 @@ internal object ConfigMigration {
         while (version < ConfigData.CURRENT_VERSION) {
             when (version) {
                 1 -> migrateV1ToV2(root)
+                2 -> migrateV2ToV3(root)
                 else -> error("No config migration is available for version $version.")
             }
             version++
         }
         root.addProperty("version", ConfigData.CURRENT_VERSION)
+        fillMissingFields(root, defaultConfig)
         return true
     }
 
@@ -96,6 +103,19 @@ internal object ConfigMigration {
         moveIfMissing(bot, napcat, "Token")
         moveIfMissing(bot, napcat, "FileUpload")
         normalizeSection(bot, "telegram", "Telegram")
+    }
+
+    private fun migrateV2ToV3(root: JsonObject) {
+        if (root.has("BlurImages")) {
+            return
+        }
+        val adapter = root.get("Bot")
+            ?.takeIf { it.isJsonObject }
+            ?.asJsonObject
+            ?.get("Adapter")
+            ?.takeIf { it.isJsonPrimitive }
+            ?.asString
+        root.addProperty("BlurImages", !adapter.equals("TELEGRAM", ignoreCase = true))
     }
 
     private fun normalizeSection(parent: JsonObject, canonicalName: String, legacyName: String): JsonObject {
@@ -118,6 +138,19 @@ internal object ConfigMigration {
         val value = source.remove(key) ?: return
         if (!target.has(key)) {
             target.add(key, value)
+        }
+    }
+
+    private fun fillMissingFields(target: JsonObject, defaults: JsonObject) {
+        defaults.entrySet().forEach { (key, defaultValue) ->
+            if (!target.has(key)) {
+                target.add(key, defaultValue.deepCopy())
+                return@forEach
+            }
+            val existingValue = target.get(key)
+            if (existingValue.isJsonObject && defaultValue.isJsonObject) {
+                fillMissingFields(existingValue.asJsonObject, defaultValue.asJsonObject)
+            }
         }
     }
 }

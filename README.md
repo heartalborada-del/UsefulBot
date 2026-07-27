@@ -46,7 +46,7 @@ java -jar ./implements/build/libs/implements-1.0.0.jar
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "Bot": {
     "Adapter": "NAPCAT",
     "CommandOperator": "/",
@@ -67,6 +67,7 @@ java -jar ./implements/build/libs/implements-1.0.0.jar
       "EnableInlineMode": true
     }
   },
+  "BlurImages": false,
   "Proxy": {
     "Type": "DIRECT",
     "Address": "127.0.0.1",
@@ -108,10 +109,14 @@ NapCat 模式使用 `Bot.napcat.Token`。`Language` 支持 `en`、`en-US`、
 `zh`、`zh-CN`、`中文` 等写法；无法识别时回退到英文。代理 `Type` 可使用 Java
 `Proxy.Type` 支持的 `DIRECT`、`HTTP` 或 `SOCKS`。
 
-`version` 是配置格式版本。没有该字段的旧配置会按 v1 读取，并在启动时自动升级为
-v2：原 `Bot.WebsocketURL`、`Bot.Token`、`Bot.FileUpload` 会迁移至
-`Bot.napcat`，原 `Bot.Telegram` 会迁移至 `Bot.telegram`。迁移时会保留其他未知字段；
-高于当前支持版本的配置不会被自动降级或重写。
+`BlurImages` 控制发送漫画信息时是否模糊封面；Telegram 通常设为 `false`，需要规避
+平台图片审核时可设为 `true`。
+
+`version` 是配置格式版本。没有该字段的旧配置会按 v1 读取，并在启动时自动升级：
+原 `Bot.WebsocketURL`、`Bot.Token`、`Bot.FileUpload` 会迁移至
+`Bot.napcat`，原 `Bot.Telegram` 会迁移至 `Bot.telegram`。迁移时会递归补齐新版本中
+缺失的字段及其默认值，同时保留已有值和其他未知字段；升级至 v3 时，NapCat 保留图片
+模糊，Telegram 默认关闭图片模糊。高于当前支持版本的配置不会被自动降级或重写。
 
 ### Telegram
 
@@ -153,6 +158,9 @@ info - 显示账户信息和 GP 余额
 ```
 
 ## 命令示例
+
+执行任意有效命令前会自动进行每日签到；当天首次执行时会获得并显示签到 GP。显式执行
+`/checkin` 时仍会返回签到成功或今日已签到的状态。
 
 ```text
 /get eh https://e-hentai.org/g/123456/abcdef1234/

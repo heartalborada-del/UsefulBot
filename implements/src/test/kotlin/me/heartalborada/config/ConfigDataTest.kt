@@ -1,6 +1,7 @@
 package me.heartalborada.config
 
 import com.google.gson.Gson
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import java.nio.file.Files
 import kotlin.test.Test
@@ -37,6 +38,7 @@ class ConfigDataTest {
         assertEquals("telegram-token", config.bot.telegram.token)
         assertEquals("https://api.telegram.org", config.bot.telegram.apiBaseUrl)
         assertEquals(false, config.bot.telegram.enableInlineMode)
+        assertFalse(config.blurImages)
         assertEquals(8, config.jmComic.imageParallelCount)
         assertEquals("https://jm365.work/3YeBdF", config.jmComic.redirectUrl)
         assertEquals("www.cdnhjk.net", config.jmComic.apiDomains.first())
@@ -73,6 +75,7 @@ class ConfigDataTest {
             assertEquals("legacy-token", config.bot.napcat.token)
             assertEquals(1024, config.bot.napcat.fileUpload.chunkSize)
             assertEquals("telegram-token", config.bot.telegram.token)
+            assertTrue(config.blurImages)
 
             val upgraded = JsonParser.parseString(configFile.readText()).asJsonObject
             val bot = upgraded.getAsJsonObject("Bot")
@@ -84,6 +87,41 @@ class ConfigDataTest {
             assertFalse(bot.has("FileUpload"))
             assertFalse(bot.has("Telegram"))
             assertTrue(upgraded.getAsJsonObject("UnknownSetting").get("keep").asBoolean)
+            assertTrue(upgraded.get("BlurImages").asBoolean)
+            assertAllDefaultFieldsPresent(
+                actual = upgraded,
+                defaults = Gson().toJsonTree(ConfigData()).asJsonObject,
+            )
+        } finally {
+            configFile.delete()
+        }
+    }
+
+    @Test
+    fun `version two Telegram config disables image blur during upgrade`() {
+        val configFile = Files.createTempFile("useful-bot-telegram-config-", ".json").toFile()
+        try {
+            configFile.writeText(
+                """{"version":2,"Bot":{"Adapter":"TELEGRAM","telegram":{"Token":"token"}}}"""
+            )
+
+            val config = Config(configFile).getConfig()
+
+            assertEquals(ConfigData.CURRENT_VERSION, config.version)
+            assertFalse(config.blurImages)
+            val upgraded = JsonParser.parseString(configFile.readText()).asJsonObject
+            assertFalse(upgraded.get("BlurImages").asBoolean)
+            assertEquals(
+                "https://api.telegram.org",
+                upgraded.getAsJsonObject("Bot")
+                    .getAsJsonObject("telegram")
+                    .get("ApiBaseURL")
+                    .asString,
+            )
+            assertAllDefaultFieldsPresent(
+                actual = upgraded,
+                defaults = Gson().toJsonTree(ConfigData()).asJsonObject,
+            )
         } finally {
             configFile.delete()
         }
@@ -103,6 +141,17 @@ class ConfigDataTest {
             assertEquals(original, configFile.readText())
         } finally {
             configFile.delete()
+        }
+    }
+
+    private fun assertAllDefaultFieldsPresent(actual: JsonObject, defaults: JsonObject, path: String = "") {
+        defaults.entrySet().forEach { (key, defaultValue) ->
+            val fieldPath = if (path.isEmpty()) key else "$path.$key"
+            assertTrue(actual.has(key), "Missing migrated config field: $fieldPath")
+            val actualValue = actual.get(key)
+            if (actualValue.isJsonObject && defaultValue.isJsonObject) {
+                assertAllDefaultFieldsPresent(actualValue.asJsonObject, defaultValue.asJsonObject, fieldPath)
+            }
         }
     }
 }

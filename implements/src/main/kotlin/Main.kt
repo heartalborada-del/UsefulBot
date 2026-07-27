@@ -105,8 +105,12 @@ fun main() = runBlocking {
         bot: AbstractBot,
     ) {
         val image = ImageIO.read(coverFile) ?: throw IllegalStateException("Failed to decode comic cover.")
-        val blurred = Util.gaussianBlur(Util.resampleImage(Util.resampleImage(image, 0.125), 8.0), radius = 10)
-        val base64 = Util.bufferedImageToBase64(blurred)
+        val displayImage = if (config.getConfig().blurImages) {
+            Util.gaussianBlur(Util.resampleImage(Util.resampleImage(image, 0.125), 8.0), radius = 10)
+        } else {
+            image
+        }
+        val base64 = Util.bufferedImageToBase64(displayImage)
         val message = MessageChain().also {
             it.add(Reply(messageID))
             val title = if (info.subtitle != null) {
@@ -387,6 +391,21 @@ fun main() = runBlocking {
         )
     }
 
+    bot.beforeCommandExecution(CommandExecutor { sender, command, _, messageID ->
+        if (command == "checkin") {
+            return@CommandExecutor
+        }
+        val userId = sender.user.userID.toULong()
+        val (amount, checkedIn) = economic.userCheckIn(userId)
+        if (checkedIn) {
+            bot.reply(
+                sender,
+                messageID,
+                translator.translate("command.checkin.success", amount, economic.getBalance(userId)),
+            )
+        }
+    })
+
     bot.registerCommand("about", usage = translator.translate("command.about.usage")) {
         sender, _, _, messageID ->
         bot.reply(sender, messageID, translator.translate("command.about.content"))
@@ -410,17 +429,11 @@ fun main() = runBlocking {
             return@CommandExecutor
         }
 
-        val (checkInAmount, checkedIn) = economic.userCheckIn(sender.user.userID.toULong())
         val result = queue.put(
             sender.user.userID,
             ComicTask.EHentai(gallery),
             QueueExtraData(messageID, sender)
         )
-        val checkInMessage = if (checkedIn) {
-            translator.translate("command.eh.checkin_bonus", checkInAmount)
-        } else {
-            ""
-        }
         val response = when (result) {
             ProcessingQueue.PutStatus.QUEUE_FULL ->
                 translator.translate("command.eh.queue_full")
@@ -433,7 +446,7 @@ fun main() = runBlocking {
             ProcessingQueue.PutStatus.FAILURE ->
                 translator.translate("command.eh.queue_failed")
         }
-        bot.reply(sender, messageID, listOf(response, checkInMessage).filter(String::isNotEmpty).joinToString(" "))
+        bot.reply(sender, messageID, response)
     }
 
     val getJMExecutor = CommandExecutor { sender, _, args, messageID ->

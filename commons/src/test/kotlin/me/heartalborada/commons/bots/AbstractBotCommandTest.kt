@@ -148,6 +148,26 @@ class AbstractBotCommandTest {
         }
     }
 
+    @Test
+    fun `before command executors run before resolved commands`() {
+        val bot = FakeBot()
+        val calls = mutableListOf<String>()
+        val completed = CompletableFuture<Unit>()
+        bot.beforeCommandExecution(executor { _, command, _, _ ->
+            calls += "before:$command"
+        })
+        bot.registerCommand("run", usage = "Run.") { _, command, _, _ ->
+            calls += "command:$command"
+            completed.complete(Unit)
+        }
+        bot.connect()
+
+        bot.broadcast("/run", messageID = 17L)
+
+        completed.get(2, TimeUnit.SECONDS)
+        assertEquals(listOf("before:run", "command:run"), calls)
+    }
+
     private fun executor(
         block: suspend (MessageSender, String, MessageChain, Long) -> Unit
     ): CommandExecutor = CommandExecutor(block)
