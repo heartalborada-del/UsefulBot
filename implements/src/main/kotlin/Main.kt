@@ -12,6 +12,8 @@ import me.heartalborada.bots.telegram.TelegramFileIdCache
 import me.heartalborada.bots.telegram.TelegramLargeDocumentSender
 import me.heartalborada.comics.EHentai
 import me.heartalborada.comics.JMComic
+import me.heartalborada.comics.isEHentaiArchiveOverSizeLimit
+import me.heartalborada.comics.selectEHentaiArchive
 import me.heartalborada.commons.Util
 import me.heartalborada.commons.bots.*
 import me.heartalborada.commons.bots.dto.FileInfo
@@ -19,7 +21,6 @@ import me.heartalborada.commons.bots.dto.ForwardMessageNode
 import me.heartalborada.commons.bots.dto.InlineQueryResult
 import me.heartalborada.commons.bots.dto.MessageSender
 import me.heartalborada.commons.bots.events.message.InlineQueryEvent
-import me.heartalborada.commons.comic.model.ArchiveInformation
 import me.heartalborada.commons.comic.PDFGenerator
 import me.heartalborada.commons.comic.SizeBoundedPdfSplitter
 import me.heartalborada.commons.comic.model.ComicInformation
@@ -105,6 +106,11 @@ private sealed interface ComicTask {
     data class JMComic(val albumId: String) : ComicTask
 }
 
+private data class ArchiveLimitExceeded(
+    val archiveSize: String,
+    val maximumSizeMiB: Long,
+)
+
 private sealed interface ComicTaskResult {
     data class EHentai(
         val gallery: Pair<String, String>,
@@ -114,6 +120,7 @@ private sealed interface ComicTaskResult {
         val pages: List<File>,
         val cacheHit: Boolean,
         val cost: Long,
+        val archiveLimitExceeded: ArchiveLimitExceeded? = null,
     ) : ComicTaskResult
 
     data class JMComic(
@@ -359,8 +366,10 @@ fun main() = runBlocking {
         try {
         val cover = "cover.${Util.getFileExtensionFromUrl(URL(info.cover))}"
         downloader.downloadFiles(listOf(Pair(info.cover, cover)), cf, 2)
-        if (pdfCache.getIfPresent(cacheKey) == true || p.exists()) {
-            return ComicTaskResult.EHentai(
+        val cacheHit = pdfCache.getIfPresent(cacheKey) == true || p.exists()
+        val maximumArchiveSizeMiB = config.getConfig().eHentai.maxArchiveSizeMiB
+        fun cachedResult(): ComicTaskResult.EHentai =
+            ComicTaskResult.EHentai(
                 gallery = gallery,
                 info = info,
                 cover = File(cf, cover),
@@ -369,10 +378,14 @@ fun main() = runBlocking {
                 cacheHit = true,
                 cost = 0,
             )
+
+        if (cacheHit && maximumArchiveSizeMiB == 0L) {
+            return cachedResult()
         }
 
-        val archive = eh.getArchiveInformation(gallery).firstOrNull { it.name == "RESAMPLE" }
+        val archive = selectEHentaiArchive(eh.getArchiveInformation(gallery).asIterable())
         if (archive == null) {
+            if (cacheHit) return cachedResult()
             return ComicTaskResult.EHentai(
                 gallery = gallery,
                 info = info,
@@ -383,9 +396,27 @@ fun main() = runBlocking {
                 cost = 0,
             )
         }
-        val cost = kotlin.math.ceil(
-            Util.convertToBytes(archive.size.replace(" ", "")).toDouble() / 1024 / 1024
-        ).toLong().coerceAtLeast(1L)
+        val archiveSizeBytes = Util.convertToBytes(archive.size.replace(" ", ""))
+        if (isEHentaiArchiveOverSizeLimit(archiveSizeBytes, maximumArchiveSizeMiB)) {
+            return ComicTaskResult.EHentai(
+                gallery = gallery,
+                info = info,
+                cover = File(cf, cover),
+                pdf = null,
+                pages = emptyList(),
+                cacheHit = false,
+                cost = 0,
+                archiveLimitExceeded = ArchiveLimitExceeded(
+                    archiveSize = archive.size,
+                    maximumSizeMiB = maximumArchiveSizeMiB,
+                ),
+            )
+        }
+        if (cacheHit) return cachedResult()
+
+        val cost = kotlin.math.ceil(archiveSizeBytes.toDouble() / 1024 / 1024)
+            .toLong()
+            .coerceAtLeast(1L)
         val subscribers = queue.getSubscribers(ComicTask.EHentai(gallery)).map { it.second }
         if (subscribers.none { extra ->
                 economic.getBalance(extra.sender.user.userID.toULong()) >= cost
@@ -402,7 +433,7 @@ fun main() = runBlocking {
             )
         }
 
-        val archiveUrl = eh.getArchiveDownloadUrl(gallery, ArchiveInformation("RESAMPLE"))
+        val archiveUrl = eh.getArchiveDownloadUrl(gallery, archive)
         var count = 0
         var list = mutableListOf<Pair<String, String?>>(Pair(archiveUrl, "$taskName.zip"))
         while (list.isNotEmpty()) {
@@ -454,7 +485,18 @@ fun main() = runBlocking {
 
         val pdf = result.pdf
         if (pdf == null) {
-            if (result.cost > 0) {
+            val archiveLimit = result.archiveLimitExceeded
+            if (archiveLimit != null) {
+                bot.reply(
+                    sender,
+                    messageID,
+                    translator.translate(
+                        "gallery.archive_too_large",
+                        archiveLimit.archiveSize,
+                        archiveLimit.maximumSizeMiB,
+                    ),
+                )
+            } else if (result.cost > 0) {
                 val userId = sender.user.userID.toULong()
                 bot.reply(
                     sender,

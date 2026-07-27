@@ -46,7 +46,7 @@ java -jar ./implements/build/libs/implements-1.0.0.jar
 
 ```json
 {
-  "version": 6,
+  "version": 7,
   "Bot": {
     "CommandOperator": "/",
     "IsCommandStartWithAt": false,
@@ -92,7 +92,8 @@ java -jar ./implements/build/libs/implements-1.0.0.jar
     "igneous": "",
     "star": "",
     "sk": "",
-    "isExHentai": false
+    "isExHentai": false,
+    "MaxArchiveSizeMiB": 0
   },
   "JMComic": {
     "ApiDomains": [
@@ -127,6 +128,8 @@ Telegram 使用
 
 `Bot.napcat.BlurImages` 和 `Bot.telegram.BlurImages` 分别控制两个平台发送漫画信息时
 是否模糊封面；Telegram 通常设为 `false`，需要规避平台图片审核时可设为 `true`。
+`Ehentai.MaxArchiveSizeMiB` 限制 E-Hentai 下载归档的最大大小；超过限制时只发送画廊信息，
+不会下载归档或发送 PDF。设为 `0` 表示不限制。
 Telegram 使用官方 Bot API 且 PDF 超过上传限制时，默认按页拆成不超过
 `Bot.telegram.LargeFile.MaxPartSizeMiB` 的临时 PDF 分卷。程序同一时刻只保留一个临时
 分卷；首次上传后按 Bot ID、原 PDF SHA-256 和分卷序号持久化 `file_id`，其他请求方直接
@@ -144,7 +147,7 @@ PDF 生成并向共享任务的全部订阅者回传完成后，程序会自动�
 缺失的字段及其默认值，同时保留已有值和其他未知字段；升级至 v4 时，旧 `Adapter`
 会迁移为对应适配器的 `Enabled`，旧全局 `BlurImages` 会迁移到原适配器配置中。
 升级至 v5 时会补充 Telegram Telegraph 预览配置；升级至 v6 时会补充 Telegram 大文件
-分卷策略。
+分卷策略；升级至 v7 时会补充 E-Hentai 归档大小限制。
 高于当前支持版本的配置不会被自动降级或重写。
 
 ### Telegram

@@ -46,6 +46,7 @@ class ConfigDataTest {
         assertEquals("data/telegram/temp", config.bot.telegram.largeFile.tempDirectory)
         assertTrue(config.bot.telegram.telegraphPreview.enabled)
         assertEquals("UsefulBot", config.bot.telegram.telegraphPreview.authorName)
+        assertEquals(0L, config.eHentai.maxArchiveSizeMiB)
         assertEquals(8, config.jmComic.imageParallelCount)
         assertEquals("https://jm365.work/3YeBdF", config.jmComic.redirectUrl)
         assertEquals("www.cdnhjk.net", config.jmComic.apiDomains.first())
@@ -187,6 +188,16 @@ class ConfigDataTest {
     }
 
     @Test
+    fun `E-Hentai archive size limit is configurable`() {
+        val config = Gson().fromJson(
+            """{"version":7,"Ehentai":{"MaxArchiveSizeMiB":768}}""",
+            ConfigData::class.java,
+        )
+
+        assertEquals(768L, config.eHentai.maxArchiveSizeMiB)
+    }
+
+    @Test
     fun `version four config gains Telegram Telegraph preview settings`() {
         val configFile = Files.createTempFile("useful-bot-v4-config-", ".json").toFile()
         try {
@@ -233,6 +244,30 @@ class ConfigDataTest {
                     .getAsJsonObject("LargeFile")
                     .get("Policy")
                     .asString,
+            )
+        } finally {
+            configFile.delete()
+        }
+    }
+
+    @Test
+    fun `version six config gains E-Hentai archive size limit`() {
+        val configFile = Files.createTempFile("useful-bot-v6-config-", ".json").toFile()
+        try {
+            configFile.writeText(
+                """{"version":6,"Ehentai":{"isExHentai":true}}"""
+            )
+
+            val config = Config(configFile).getConfig()
+
+            assertEquals(ConfigData.CURRENT_VERSION, config.version)
+            assertEquals(0L, config.eHentai.maxArchiveSizeMiB)
+            val upgraded = JsonParser.parseString(configFile.readText()).asJsonObject
+            assertEquals(
+                0L,
+                upgraded.getAsJsonObject("Ehentai")
+                    .get("MaxArchiveSizeMiB")
+                    .asLong,
             )
         } finally {
             configFile.delete()

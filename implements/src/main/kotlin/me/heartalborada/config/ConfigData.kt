@@ -68,6 +68,7 @@ data class ConfigData @JvmOverloads constructor(
         @SerializedName("star") val star: String = "",
         @SerializedName("sk") val sk: String = "",
         @SerializedName("isExHentai") val isExHentai: Boolean = false,
+        @SerializedName("MaxArchiveSizeMiB") val maxArchiveSizeMiB: Long = 0,
     )
 
     data class JMComic @JvmOverloads constructor(
@@ -91,7 +92,7 @@ data class ConfigData @JvmOverloads constructor(
     )
 
     companion object {
-        const val CURRENT_VERSION = 6
+        const val CURRENT_VERSION = 7
     }
 }
 
