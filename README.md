@@ -119,6 +119,25 @@ Telegram adapter 使用官方 HTTP Bot API 的 `getUpdates` 长轮询，因此�
 Webhook。群组命令支持 Telegram 的 `/command@bot_username` 格式；NapCat 合并转发在
 Telegram 中会降级为带分隔线的普通文本消息。
 
+#### 注册 Telegram 命令
+
+在 BotFather 中执行 `/setcommands`，选择 UsefulBot 后粘贴以下内容：
+
+```text
+help - 显示可用命令和子命令帮助
+about - 显示机器人信息
+get - 下载 E-Hentai 或 JMComic 漫画
+search - 搜索 E-Hentai 或 JMComic 漫画
+checkin - 每日签到领取 GP
+info - 显示账户信息和 GP 余额
+```
+
+这里只注册顶级命令。`eh`、`jm` 是 `/get` 和 `/search` 的子命令，例如
+`/get eh <画廊链接>`、`/search jm <关键词>`，不需要单独注册。BotFather 中的命令菜单
+只影响 Telegram 客户端展示，实际命令仍由 UsefulBot 的命令注册器处理。
+
+#### Inline 搜索
+
 如需启用 inline 搜索：
 
 1. 在 BotFather 中执行 `/setinline` 并为机器人开启 Inline Mode。
