@@ -143,6 +143,47 @@ private fun listComicPages(directory: File): List<File> {
     }?.sortedWith(comparator).orEmpty()
 }
 
+internal fun deleteCacheEntry(root: File, target: File): Boolean {
+    val canonicalRoot = root.canonicalFile.toPath()
+    val canonicalTarget = target.canonicalFile.toPath()
+    require(canonicalTarget != canonicalRoot && canonicalTarget.startsWith(canonicalRoot)) {
+        "Refusing to delete a cache entry outside its root: $canonicalTarget"
+    }
+    if (!target.exists()) return true
+    return if (target.isDirectory) target.deleteRecursively() else target.delete()
+}
+
+private fun cleanupComicTaskCache(task: ComicTask) {
+    val targets = when (task) {
+        is ComicTask.EHentai -> {
+            val taskName = "${task.gallery.first}-${task.gallery.second}"
+            listOf(
+                ehArchiveFolder to File(ehArchiveFolder, "$taskName.zip"),
+                ehImgFolder to File(ehImgFolder, taskName),
+                ehTempFolder to File(File(ehTempFolder, "download"), taskName),
+                ehTempFolder to File(File(ehTempFolder, "pdf"), taskName),
+            )
+        }
+
+        is ComicTask.JMComic -> {
+            val taskName = "JM${task.albumId}"
+            listOf(
+                jmImgFolder to File(jmImgFolder, taskName),
+                jmTempFolder to File(File(jmTempFolder, "pdf"), taskName),
+            )
+        }
+    }
+    targets.forEach { (root, target) ->
+        runCatching {
+            check(deleteCacheEntry(root, target)) {
+                "Failed to delete cache entry ${target.absolutePath}"
+            }
+        }.onFailure { exception ->
+            logger.warn("Failed to clean comic task cache {}.", target.absolutePath, exception)
+        }
+    }
+}
+
 fun main() = runBlocking {
     val telegramFileIdCache = TelegramFileIdCache(economicDataSource)
     val telegramLargeDocumentSenders = ConcurrentHashMap<TelegramBot, TelegramLargeDocumentSender>()
@@ -302,14 +343,20 @@ fun main() = runBlocking {
 
     suspend fun generateEHentai(gallery: Pair<String, String>): ComicTaskResult.EHentai {
         val cacheKey = "eh:${gallery.first}:${gallery.second}"
-        val p = File(ehPdfFolder, "${gallery.first}-${gallery.second}.pdf")
-        val cf = File(ehImgFolder, "${gallery.first}-${gallery.second}")
+        val taskName = "${gallery.first}-${gallery.second}"
+        val p = File(ehPdfFolder, "$taskName.pdf")
+        val cf = File(ehImgFolder, taskName)
         if (!cf.isDirectory || !cf.exists()) {
             cf.delete()
             cf.mkdirs()
         }
         val info = eh.getTargetInformation(gallery)
-        val downloader = DownloadManager(16, client, File(ehTempFolder, "download"))
+        val downloader = DownloadManager(
+            16,
+            client,
+            File(File(ehTempFolder, "download"), taskName),
+        )
+        try {
         val cover = "cover.${Util.getFileExtensionFromUrl(URL(info.cover))}"
         downloader.downloadFiles(listOf(Pair(info.cover, cover)), cf, 2)
         if (pdfCache.getIfPresent(cacheKey) == true || p.exists()) {
@@ -357,13 +404,13 @@ fun main() = runBlocking {
 
         val archiveUrl = eh.getArchiveDownloadUrl(gallery, ArchiveInformation("RESAMPLE"))
         var count = 0
-        var list = mutableListOf<Pair<String, String?>>(Pair(archiveUrl, "${gallery.first}-${gallery.second}.zip"))
+        var list = mutableListOf<Pair<String, String?>>(Pair(archiveUrl, "$taskName.zip"))
         while (list.isNotEmpty()) {
             check(count < 3) { "Failed to download the E-Hentai archive after 3 attempts." }
             count++
             list = downloader.downloadFiles(list, ehArchiveFolder, 4)
         }
-        Util.unzip(File(ehArchiveFolder, "${gallery.first}-${gallery.second}.zip"), cf)
+        Util.unzip(File(ehArchiveFolder, "$taskName.zip"), cf)
         ehPdfFolder.mkdirs()
         val comparator = NaturalFileNameComparator()
         val pages = cf.listFiles { file ->
@@ -376,7 +423,8 @@ fun main() = runBlocking {
         check(pages.isNotEmpty()) { "No supported images were found in the downloaded archive." }
         PDFGenerator.generatePDF(
             pages,
-            pdfFile = p, tempDir = File(ehTempFolder, "pdf"),
+            pdfFile = p,
+            tempDir = File(File(ehTempFolder, "pdf"), taskName),
             password = "${gallery.first}-${gallery.second}",
             signatureText = "Generated at:${
                 Instant.now().atZone(ZoneOffset.UTC)
@@ -393,6 +441,9 @@ fun main() = runBlocking {
             cacheHit = false,
             cost = cost,
         )
+        } finally {
+            downloader.close()
+        }
     }
 
     fun deliverEHentai(result: ComicTaskResult.EHentai, extra: QueueExtraData) {
@@ -545,7 +596,7 @@ fun main() = runBlocking {
         PDFGenerator.generatePDF(
             pages,
             pdfFile = pdf,
-            tempDir = File(jmTempFolder, "pdf"),
+            tempDir = File(File(jmTempFolder, "pdf"), "JM$albumId"),
             password = "JM$albumId",
             signatureText = "Generated at:${
                 Instant.now().atZone(ZoneOffset.UTC)
@@ -977,23 +1028,47 @@ fun main() = runBlocking {
                         is ComicTask.JMComic -> generateJMComic(task.albumId)
                     }
                 }
-                val subscribers = queue.completeAndGetSubscribers(task).map { it.second }
-                result.fold(
-                    onSuccess = { taskResult ->
-                        subscribers.forEach { subscriber ->
-                            runCatching {
-                                when (taskResult) {
-                                    is ComicTaskResult.EHentai -> deliverEHentai(taskResult, subscriber)
-                                    is ComicTaskResult.JMComic -> deliverJMComic(taskResult, subscriber)
+                val subscribers = queue.sealAndGetSubscribers(task).map { it.second }
+                try {
+                    result.fold(
+                        onSuccess = { taskResult ->
+                            try {
+                                subscribers.forEach { subscriber ->
+                                    runCatching {
+                                        when (taskResult) {
+                                            is ComicTaskResult.EHentai -> deliverEHentai(taskResult, subscriber)
+                                            is ComicTaskResult.JMComic -> deliverJMComic(taskResult, subscriber)
+                                        }
+                                    }.onFailure { exception ->
+                                        logger.error(
+                                            "Failed to deliver {} to user {} through {}.",
+                                            task,
+                                            subscriber.sender.user.userID,
+                                            subscriber.bot::class.simpleName,
+                                            exception,
+                                        )
+                                        runCatching {
+                                            subscriber.bot.reply(
+                                                subscriber.sender,
+                                                subscriber.messageID,
+                                                translator.translate(
+                                                    if (task is ComicTask.EHentai) {
+                                                        "gallery.task_failed_refunded"
+                                                    } else {
+                                                        "jm.task_failed"
+                                                    }
+                                                )
+                                            )
+                                        }
+                                    }
                                 }
-                            }.onFailure { exception ->
-                                logger.error(
-                                    "Failed to deliver {} to user {} through {}.",
-                                    task,
-                                    subscriber.sender.user.userID,
-                                    subscriber.bot::class.simpleName,
-                                    exception,
-                                )
+                            } finally {
+                                cleanupComicTaskCache(task)
+                            }
+                        },
+                        onFailure = { exception ->
+                            logger.error("Failed to process shared task {}.", task, exception)
+                            subscribers.forEach { subscriber ->
                                 runCatching {
                                     subscriber.bot.reply(
                                         subscriber.sender,
@@ -1008,27 +1083,11 @@ fun main() = runBlocking {
                                     )
                                 }
                             }
-                        }
-                    },
-                    onFailure = { exception ->
-                        logger.error("Failed to process shared task {}.", task, exception)
-                        subscribers.forEach { subscriber ->
-                            runCatching {
-                                subscriber.bot.reply(
-                                    subscriber.sender,
-                                    subscriber.messageID,
-                                    translator.translate(
-                                        if (task is ComicTask.EHentai) {
-                                            "gallery.task_failed_refunded"
-                                        } else {
-                                            "jm.task_failed"
-                                        }
-                                    )
-                                )
-                            }
-                        }
-                    },
-                )
+                        },
+                    )
+                } finally {
+                    queue.completeSealed(task)
+                }
             }
         }
     }

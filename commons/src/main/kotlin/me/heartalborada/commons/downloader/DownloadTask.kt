@@ -36,6 +36,14 @@ class DownloadTask(
     private val chunkSize = 2 * 1024 * 1024L // Block size
 
     fun download() {
+        try {
+            downloadInternal()
+        } finally {
+            randomAccessFile.close()
+        }
+    }
+
+    private fun downloadInternal() {
         logger.debug("Starting download...")
         val size = getSize()
         if (size != null) {

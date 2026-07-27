@@ -134,6 +134,9 @@ Telegram 使用官方 Bot API 且 PDF 超过上传限制时，默认按页拆成
 分卷。`Policy` 可设为 `SPLIT_PDF`、`TELEGRAPH` 或 `FAIL`。使用 `TELEGRAPH` 时还需启用
 `TelegraphPreview.Enabled`；`AccessToken` 留空会在首次使用时自动创建 Telegraph 账户。
 Telegram 发送的普通 PDF 与 PDF 分卷均不设置打开密码；NapCat 始终发送原始完整 PDF。
+PDF 生成并向共享任务的全部订阅者回传完成后，程序会自动删除对应的下载归档、解压图片、
+封面、断点进度、HTTP 下载缓存和 PDFBox 临时目录，仅保留最终 PDF。不同漫画任务使用
+隔离的临时目录，清理不会影响并行生成任务。
 
 `version` 是配置格式版本。没有该字段的旧配置会按 v1 读取，并在启动时自动升级：
 原 `Bot.WebsocketURL`、`Bot.Token`、`Bot.FileUpload` 会迁移至

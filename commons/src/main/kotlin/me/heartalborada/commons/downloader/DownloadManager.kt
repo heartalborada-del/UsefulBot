@@ -14,16 +14,17 @@ class DownloadManager(
     parallelPoolSize: Int = 4,
     private val parentClient: OkHttpClient = OkHttpClient.Builder().build(),
     private val cacheFolder: File = File(System.getProperty("java.io.tmpdir"))
-) {
+) : AutoCloseable {
     private val logger = LoggerFactory.getLogger(this::class.java)
     private val downloadDispatcher = Executors.newFixedThreadPool(parallelPoolSize).asCoroutineDispatcher()
-    private val okHttpClient: OkHttpClient by lazy {
+    private val okHttpClientDelegate = lazy {
         parentClient.newBuilder()
             .cache(Cache(cacheFolder, 1024L * 1024L * 1024L))
             .followRedirects(true)
             .followSslRedirects(true)
             .build()
     }
+    private val okHttpClient: OkHttpClient by okHttpClientDelegate
 
     fun downloadFiles(
         urls: List<Pair<String, String?>>,
@@ -59,5 +60,13 @@ class DownloadManager(
             }.awaitAll()
         }
         return failedDownloads
+    }
+
+    override fun close() {
+        downloadDispatcher.close()
+        if (okHttpClientDelegate.isInitialized()) {
+            runCatching { okHttpClient.cache?.close() }
+                .onFailure { logger.warn("Failed to close the download HTTP cache.", it) }
+        }
     }
 }

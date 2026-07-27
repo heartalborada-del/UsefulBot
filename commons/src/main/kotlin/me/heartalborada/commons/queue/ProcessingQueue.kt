@@ -11,6 +11,7 @@ class ProcessingQueue<K, T, E>(
     private val channel = Channel<Triple<K, T, E>>(globalCapacity)
     private val mutex = Mutex()
     private val activeTasks = mutableSetOf<T>()
+    private val sealedTasks = mutableSetOf<T>()
     private val userTaskCounts = mutableMapOf<K, Int>()
     private val taskSubscribers = mutableMapOf<T, MutableList<Pair<K, E>>>()
 
@@ -37,6 +38,7 @@ class ProcessingQueue<K, T, E>(
         val reservation = mutex.withLock {
             when {
                 task in activeTasks && !joinActiveTask -> PutStatus.DUPLICATE_TASK
+                task in sealedTasks -> PutStatus.DUPLICATE_TASK
                 task in activeTasks && taskSubscribers[task].orEmpty().any { it.first == userId } ->
                     PutStatus.DUPLICATE_TASK
                 userTaskCounts.getOrDefault(userId, 0) >= userCapacity -> PutStatus.USER_QUEUE_FULL
@@ -65,6 +67,7 @@ class ProcessingQueue<K, T, E>(
 
         mutex.withLock {
             activeTasks.remove(task)
+            sealedTasks.remove(task)
             val subscribers = taskSubscribers.remove(task).orEmpty()
             if (subscribers.isEmpty()) {
                 decrementUserTaskCount(userId)
@@ -89,6 +92,7 @@ class ProcessingQueue<K, T, E>(
     suspend fun complete(userId: K, task: T) {
         mutex.withLock {
             if (activeTasks.remove(task)) {
+                sealedTasks.remove(task)
                 val subscribers = taskSubscribers.remove(task).orEmpty()
                 if (subscribers.isEmpty()) {
                     decrementUserTaskCount(userId)
@@ -106,6 +110,7 @@ class ProcessingQueue<K, T, E>(
             if (!activeTasks.remove(task)) {
                 return@withLock emptyList()
             }
+            sealedTasks.remove(task)
             taskSubscribers.remove(task)
                 .orEmpty()
                 .also { subscribers ->
@@ -114,6 +119,28 @@ class ProcessingQueue<K, T, E>(
                     }
                 }
         }
+
+    suspend fun sealAndGetSubscribers(task: T): List<Pair<K, E>> =
+        mutex.withLock {
+            if (task !in activeTasks || !sealedTasks.add(task)) {
+                return@withLock emptyList()
+            }
+            taskSubscribers.remove(task)
+                .orEmpty()
+                .also { subscribers ->
+                    subscribers.forEach { (subscriber, _) ->
+                        decrementUserTaskCount(subscriber)
+                    }
+                }
+        }
+
+    suspend fun completeSealed(task: T) {
+        mutex.withLock {
+            if (sealedTasks.remove(task)) {
+                activeTasks.remove(task)
+            }
+        }
+    }
 
     suspend fun getSubscribers(task: T): List<Pair<K, E>> =
         mutex.withLock {

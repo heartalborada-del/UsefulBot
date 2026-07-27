@@ -88,4 +88,22 @@ class ProcessingQueueTest {
         assertEquals(ProcessingQueue.PutStatus.DUPLICATE_TASK, queue.putOrJoin(1L, "gallery", Unit))
         assertEquals(ProcessingQueue.PutStatus.JOINED_TASK, queue.putOrJoin(2L, "gallery", Unit))
     }
+
+    @Test
+    fun `sealed task remains reserved while subscribers are being delivered`() = runBlocking {
+        val queue = ProcessingQueue<Long, String, String>(globalCapacity = 2)
+        assertEquals(ProcessingQueue.PutStatus.SUCCESS, queue.putOrJoin(1L, "gallery", "first"))
+        assertEquals(ProcessingQueue.PutStatus.JOINED_TASK, queue.putOrJoin(2L, "gallery", "second"))
+        queue.take()
+
+        val subscribers = queue.sealAndGetSubscribers("gallery")
+
+        assertEquals(setOf("first", "second"), subscribers.map { it.second }.toSet())
+        assertEquals(
+            ProcessingQueue.PutStatus.DUPLICATE_TASK,
+            queue.putOrJoin(3L, "gallery", "late"),
+        )
+        queue.completeSealed("gallery")
+        assertEquals(ProcessingQueue.PutStatus.SUCCESS, queue.putOrJoin(3L, "gallery", "retry"))
+    }
 }
