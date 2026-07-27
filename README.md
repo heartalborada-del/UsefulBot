@@ -1,6 +1,6 @@
 # UsefulBot
 
-UsefulBot 是一个使用 Kotlin 编写、通过 NapCat OneBot 11 WebSocket 接入 QQ 的漫画下载与 PDF 生成机器人。目前支持 E-Hentai / ExHentai 和 JMComic，并内置简体中文、英文消息，未知语言会回退到英文。
+UsefulBot 是一个使用 Kotlin 编写、可通过 NapCat OneBot 11 接入 QQ 或通过官方 Bot API 接入 Telegram 的漫画下载与 PDF 生成机器人。目前支持 E-Hentai / ExHentai 和 JMComic，并内置简体中文、英文消息，未知语言会回退到英文。
 
 ## 功能
 
@@ -18,7 +18,8 @@ UsefulBot 是一个使用 Kotlin 编写、通过 NapCat OneBot 11 WebSocket 接�
 ## 环境要求
 
 - JDK 11 或更高版本。
-- 可用的 NapCatQQ OneBot 11 正向 WebSocket 服务。
+- NapCat 模式需要可用的 NapCatQQ OneBot 11 正向 WebSocket 服务。
+- Telegram 模式需要通过 BotFather 创建的机器人 Token。
 - 如需访问受网络限制的漫画源，请自行配置合规可用的代理。
 
 ## 构建和运行
@@ -45,16 +46,25 @@ java -jar ./implements/build/libs/implements-1.0.0.jar
 
 ```json
 {
+  "version": 2,
   "Bot": {
-    "WebsocketURL": "ws://127.0.0.1:3000",
-    "Token": "napcat!",
+    "Adapter": "NAPCAT",
     "CommandOperator": "/",
     "IsCommandStartWithAt": false,
     "Language": "zh-CN",
-    "FileUpload": {
-      "ChunkSize": 524288,
-      "UseStreamAPI": false,
-      "Stream_ExpireSeconds": 600
+    "napcat": {
+      "WebsocketURL": "ws://127.0.0.1:3000",
+      "Token": "napcat!",
+      "FileUpload": {
+        "ChunkSize": 524288,
+        "UseStreamAPI": false,
+        "Stream_ExpireSeconds": 600
+      }
+    },
+    "telegram": {
+      "Token": "",
+      "ApiBaseURL": "https://api.telegram.org",
+      "EnableInlineMode": true
     }
   },
   "Proxy": {
@@ -93,7 +103,35 @@ java -jar ./implements/build/libs/implements-1.0.0.jar
 }
 ```
 
-`Language` 支持 `en`、`en-US`、`zh`、`zh-CN`、`中文` 等写法；无法识别时回退到英文。代理 `Type` 可使用 Java `Proxy.Type` 支持的 `DIRECT`、`HTTP` 或 `SOCKS`。
+`Adapter` 可设为 `NAPCAT` 或 `TELEGRAM`。Telegram 模式使用 `Bot.telegram.Token`，
+NapCat 模式使用 `Bot.napcat.Token`。`Language` 支持 `en`、`en-US`、
+`zh`、`zh-CN`、`中文` 等写法；无法识别时回退到英文。代理 `Type` 可使用 Java
+`Proxy.Type` 支持的 `DIRECT`、`HTTP` 或 `SOCKS`。
+
+`version` 是配置格式版本。没有该字段的旧配置会按 v1 读取，并在启动时自动升级为
+v2：原 `Bot.WebsocketURL`、`Bot.Token`、`Bot.FileUpload` 会迁移至
+`Bot.napcat`，原 `Bot.Telegram` 会迁移至 `Bot.telegram`。迁移时会保留其他未知字段；
+高于当前支持版本的配置不会被自动降级或重写。
+
+### Telegram
+
+Telegram adapter 使用官方 HTTP Bot API 的 `getUpdates` 长轮询，因此机器人不能同时配置
+Webhook。群组命令支持 Telegram 的 `/command@bot_username` 格式；NapCat 合并转发在
+Telegram 中会降级为带分隔线的普通文本消息。
+
+如需启用 inline 搜索：
+
+1. 在 BotFather 中执行 `/setinline` 并为机器人开启 Inline Mode。
+2. 保持 `EnableInlineMode` 为 `true`。
+3. 在任意聊天输入 `@你的机器人用户名 eh <关键词>` 或
+   `@你的机器人用户名 jm <关键词>`。
+
+例如：
+
+```text
+@UsefulBot eh --category=manga --min-stars=4 language:chinese
+@UsefulBot jm 中文 全彩
+```
 
 ## 命令示例
 

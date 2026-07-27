@@ -1,0 +1,544 @@
+package me.heartalborada.bots.telegram
+
+import com.google.gson.Gson
+import com.google.gson.JsonArray
+import com.google.gson.JsonElement
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import me.heartalborada.commons.ChatType
+import me.heartalborada.commons.bots.AbstractBot
+import me.heartalborada.commons.bots.AbstractMessageObject
+import me.heartalborada.commons.bots.At
+import me.heartalborada.commons.bots.AtAll
+import me.heartalborada.commons.bots.File as FileMessage
+import me.heartalborada.commons.bots.Image
+import me.heartalborada.commons.bots.MessageChain
+import me.heartalborada.commons.bots.PlainText
+import me.heartalborada.commons.bots.Reply
+import me.heartalborada.commons.bots.dto.ForwardMessageNode
+import me.heartalborada.commons.bots.dto.ForwardMessageResult
+import me.heartalborada.commons.bots.dto.InlineQueryResult
+import me.heartalborada.commons.bots.dto.UserInfo
+import me.heartalborada.commons.bots.events.EventBus
+import me.heartalborada.commons.bots.events.message.GroupMessageEvent
+import me.heartalborada.commons.bots.events.message.InlineQueryEvent
+import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
+import me.heartalborada.commons.i18n.Translator
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.slf4j.LoggerFactory
+import java.io.File
+import java.net.URI
+import java.time.Instant
+import java.util.Base64
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+
+class TelegramBot(
+    token: String,
+    apiBaseUrl: String = DEFAULT_API_BASE_URL,
+    parentClient: OkHttpClient = OkHttpClient(),
+    commandOperator: Char = '/',
+    translator: Translator = Translator(),
+    private val inlineModeEnabled: Boolean = true,
+    autoConnect: Boolean = true,
+) : AbstractBot(
+    commandStartWithAt = false,
+    commandOperator = commandOperator,
+    translator = translator,
+) {
+    private val logger = LoggerFactory.getLogger(this::class.java)
+    private val gson = Gson()
+    private val eventBus = EventBus()
+    private val connected = AtomicBoolean(false)
+    private val pollingScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("TelegramPolling"))
+    private val client = parentClient.newBuilder()
+        .readTimeout(POLL_TIMEOUT_SECONDS + 10L, TimeUnit.SECONDS)
+        .build()
+    private val apiRoot: String
+    private val commandOperator = commandOperator
+    private val messageChats = ConcurrentHashMap<Long, Long>()
+
+    @Volatile
+    private var botID: Long = 0L
+
+    @Volatile
+    private var botUsername: String = ""
+
+    init {
+        require(token.isNotBlank()) { "Telegram bot token must not be blank." }
+        apiRoot = "${apiBaseUrl.trimEnd('/')}/bot$token/"
+        if (autoConnect) connect()
+    }
+
+    override fun connect(): Boolean {
+        check(connected.compareAndSet(false, true)) { "Telegram bot is already connected." }
+        return try {
+            super.connect()
+            val me = call("getMe").asJsonObject
+            botID = me["id"].asLong
+            botUsername = me.get("username")?.asString.orEmpty()
+            pollingScope.launch { pollUpdates() }
+            true
+        } catch (exception: Exception) {
+            connected.set(false)
+            throw exception
+        }
+    }
+
+    override fun close(): Boolean {
+        connected.set(false)
+        pollingScope.cancel()
+        super.close()
+        return true
+    }
+
+    override fun getEventBus(): EventBus = eventBus
+
+    override fun sendMessage(type: ChatType, id: Long, message: MessageChain): Long {
+        require(type == ChatType.PRIVATE || type == ChatType.GROUP) { "Unsupported Telegram chat type: $type" }
+        val replyTo = message.filterIsInstance<Reply>().firstOrNull()?.id
+        val text = renderTelegramText(message)
+        val image = message.filterIsInstance<Image>().firstOrNull()
+        val file = message.filterIsInstance<FileMessage>().firstOrNull()
+        return when {
+            image != null -> sendPhoto(id, image, text, replyTo)
+            file != null -> {
+                val url = file.info.url ?: throw IllegalArgumentException("Telegram file message requires a URL.")
+                sendDocument(id, file.info.name, url, text.takeIf(String::isNotBlank), replyTo)
+            }
+            else -> sendText(id, text, replyTo)
+        }
+    }
+
+    override fun sendForwardMessage(
+        type: ChatType,
+        target: Long,
+        messages: List<ForwardMessageNode>,
+    ): ForwardMessageResult {
+        require(type == ChatType.PRIVATE || type == ChatType.GROUP) { "Unsupported Telegram chat type: $type" }
+        require(messages.isNotEmpty()) { "Forward messages must not be empty." }
+        val sentMessageIDs = mutableListOf<Long>()
+        val customText = messages.filterIsInstance<ForwardMessageNode.CustomMessage>()
+            .joinToString(FORWARD_SEPARATOR) { renderTelegramText(it.content) }
+            .trim()
+        if (customText.isNotEmpty()) {
+            sentMessageIDs += sendText(target, customText)
+        }
+        messages.filterIsInstance<ForwardMessageNode.ExistingMessage>().forEach { node ->
+            val sourceChat = messageChats[node.messageID] ?: return@forEach
+            val params = JsonObject().apply {
+                addProperty("chat_id", target)
+                addProperty("from_chat_id", sourceChat)
+                addProperty("message_id", node.messageID)
+            }
+            val result = call("forwardMessage", params).asJsonObject
+            sentMessageIDs += rememberMessage(result)
+        }
+        check(sentMessageIDs.isNotEmpty()) { "No Telegram forward nodes could be delivered." }
+        return ForwardMessageResult(sentMessageIDs.first())
+    }
+
+    override fun answerInlineQuery(
+        queryID: String,
+        results: List<InlineQueryResult>,
+        nextOffset: String?,
+    ): Boolean {
+        require(queryID.isNotBlank()) { "Inline query ID must not be blank." }
+        require(results.size <= MAX_INLINE_RESULTS) { "Telegram accepts at most $MAX_INLINE_RESULTS inline results." }
+        val params = JsonObject().apply {
+            addProperty("inline_query_id", queryID)
+            add("results", JsonArray().apply {
+                results.forEach { result ->
+                    add(JsonObject().apply {
+                        addProperty("type", "article")
+                        addProperty("id", result.id)
+                        addProperty("title", result.title.take(MAX_INLINE_TITLE_LENGTH))
+                        result.description?.takeIf(String::isNotBlank)?.let {
+                            addProperty("description", it.take(MAX_INLINE_DESCRIPTION_LENGTH))
+                        }
+                        result.url?.takeIf(String::isNotBlank)?.let { addProperty("url", it) }
+                        add("input_message_content", JsonObject().apply {
+                            addProperty("message_text", result.message.take(MAX_MESSAGE_LENGTH))
+                        })
+                    })
+                }
+            })
+            addProperty("cache_time", 0)
+            addProperty("is_personal", true)
+            nextOffset?.let { addProperty("next_offset", it.take(64)) }
+        }
+        return call("answerInlineQuery", params).asBoolean
+    }
+
+    override fun recallMessage(messageID: Long): Boolean {
+        val chatID = messageChats[messageID] ?: return false
+        val params = JsonObject().apply {
+            addProperty("chat_id", chatID)
+            addProperty("message_id", messageID)
+        }
+        val deleted = call("deleteMessage", params).asBoolean
+        if (deleted) messageChats.remove(messageID)
+        return deleted
+    }
+
+    override fun sendFile(type: ChatType, target: Long, name: String, url: String): Boolean {
+        require(type == ChatType.PRIVATE || type == ChatType.GROUP) { "Unsupported Telegram chat type: $type" }
+        sendDocument(target, name, url)
+        return true
+    }
+
+    override fun sendFile(type: ChatType, target: Long, name: String, file: File): Boolean {
+        require(type == ChatType.PRIVATE || type == ChatType.GROUP) { "Unsupported Telegram chat type: $type" }
+        require(file.isFile) { "Telegram upload file does not exist: ${file.absolutePath}" }
+        val result = upload(
+            method = "sendDocument",
+            chatID = target,
+            fieldName = "document",
+            fileName = name,
+            body = file.asRequestBody("application/octet-stream".toMediaType()),
+        )
+        rememberMessage(result.asJsonObject)
+        return true
+    }
+
+    internal fun handleUpdate(update: JsonObject) {
+        update.getAsJsonObject("message")?.let(::handleMessage)
+        if (inlineModeEnabled) {
+            update.getAsJsonObject("inline_query")?.let(::handleInlineQuery)
+        }
+    }
+
+    private suspend fun pollUpdates() {
+        var offset = 0L
+        while (connected.get()) {
+            try {
+                val params = JsonObject().apply {
+                    addProperty("offset", offset)
+                    addProperty("timeout", POLL_TIMEOUT_SECONDS)
+                    add("allowed_updates", JsonArray().apply {
+                        add("message")
+                        if (inlineModeEnabled) add("inline_query")
+                    })
+                }
+                call("getUpdates", params).asJsonArray.forEach { element ->
+                    val update = element.asJsonObject
+                    offset = maxOf(offset, update["update_id"].asLong + 1)
+                    runCatching { handleUpdate(update) }
+                        .onFailure { logger.error("Failed to handle Telegram update.", it) }
+                }
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (exception: Exception) {
+                logger.warn("Telegram polling failed; retrying.", exception)
+                delay(RETRY_DELAY_MILLIS)
+            }
+        }
+    }
+
+    private fun handleMessage(message: JsonObject) {
+        val text = message.get("text")?.asString ?: return
+        val from = message.getAsJsonObject("from") ?: return
+        if (from.get("is_bot")?.asBoolean == true) return
+        val chat = message.getAsJsonObject("chat") ?: return
+        val chatID = chat["id"].asLong
+        val messageID = message["message_id"].asLong
+        val normalizedText = normalizeTelegramCommand(text, botUsername, commandOperator) ?: return
+        val sender = from.toUserInfo()
+        val chain = MessageChain.text(normalizedText)
+        messageChats[messageID] = chatID
+        when (chat["type"].asString) {
+            "private" -> eventBus.broadcast(
+                PrivateMessageEvent(
+                    botID = botID,
+                    timestamp = message.get("date")?.asLong ?: Instant.now().epochSecond,
+                    sender = sender,
+                    message = chain,
+                    messageID = messageID,
+                )
+            )
+            "group", "supergroup" -> eventBus.broadcast(
+                GroupMessageEvent(
+                    botID = botID,
+                    timestamp = message.get("date")?.asLong ?: Instant.now().epochSecond,
+                    groupID = chatID,
+                    sender = sender,
+                    message = chain,
+                    messageID = messageID,
+                )
+            )
+        }
+    }
+
+    private fun handleInlineQuery(query: JsonObject) {
+        val from = query.getAsJsonObject("from") ?: return
+        if (from.get("is_bot")?.asBoolean == true) return
+        eventBus.broadcast(
+            InlineQueryEvent(
+                botID = botID,
+                sender = from.toUserInfo(),
+                queryID = query["id"].asString,
+                query = query.get("query")?.asString.orEmpty(),
+                offset = query.get("offset")?.asString.orEmpty(),
+            )
+        )
+    }
+
+    private fun JsonObject.toUserInfo(): UserInfo {
+        val displayName = listOfNotNull(
+            get("first_name")?.asString,
+            get("last_name")?.asString,
+        ).joinToString(" ").ifBlank {
+            get("username")?.asString ?: get("id").asString
+        }
+        return UserInfo(
+            userID = get("id").asLong,
+            username = displayName,
+            card = get("username")?.asString,
+        )
+    }
+
+    private fun sendText(chatID: Long, text: String, replyTo: Long? = null): Long {
+        require(text.isNotBlank()) { "Telegram message text must not be blank." }
+        var firstMessageID: Long? = null
+        splitTelegramText(text).forEachIndexed { index, chunk ->
+            val params = JsonObject().apply {
+                addProperty("chat_id", chatID)
+                addProperty("text", chunk)
+                if (index == 0) addReplyParameters(replyTo)
+            }
+            val messageID = rememberMessage(call("sendMessage", params).asJsonObject)
+            if (firstMessageID == null) firstMessageID = messageID
+        }
+        return checkNotNull(firstMessageID)
+    }
+
+    private fun sendPhoto(chatID: Long, image: Image, caption: String, replyTo: Long?): Long {
+        val resource = image.info.url ?: image.info.id
+            ?: throw IllegalArgumentException("Telegram image requires a URL, file ID, or base64 payload.")
+        val result = when {
+            resource.startsWith("base64://") -> upload(
+                method = "sendPhoto",
+                chatID = chatID,
+                fieldName = "photo",
+                fileName = image.info.name,
+                body = Base64.getDecoder()
+                    .decode(resource.removePrefix("base64://"))
+                    .toRequestBody("image/png".toMediaType()),
+                caption = caption,
+                replyTo = replyTo,
+            )
+            resource.startsWith("file://") -> {
+                val file = fileFromResource(resource)
+                upload(
+                    method = "sendPhoto",
+                    chatID = chatID,
+                    fieldName = "photo",
+                    fileName = image.info.name,
+                    body = file.asRequestBody("application/octet-stream".toMediaType()),
+                    caption = caption,
+                    replyTo = replyTo,
+                )
+            }
+            else -> call("sendPhoto", JsonObject().apply {
+                addProperty("chat_id", chatID)
+                addProperty("photo", resource)
+                caption.takeIf(String::isNotBlank)?.let {
+                    addProperty("caption", it.take(MAX_CAPTION_LENGTH))
+                }
+                addReplyParameters(replyTo)
+            })
+        }
+        return rememberMessage(result.asJsonObject)
+    }
+
+    private fun sendDocument(
+        chatID: Long,
+        name: String,
+        resource: String,
+        caption: String? = null,
+        replyTo: Long? = null,
+    ): Long {
+        val result = when {
+            resource.startsWith("base64://") -> upload(
+                method = "sendDocument",
+                chatID = chatID,
+                fieldName = "document",
+                fileName = name,
+                body = Base64.getDecoder()
+                    .decode(resource.removePrefix("base64://"))
+                    .toRequestBody("application/octet-stream".toMediaType()),
+                caption = caption,
+                replyTo = replyTo,
+            )
+            resource.startsWith("file://") || File(resource).isFile -> {
+                val file = fileFromResource(resource)
+                upload(
+                    method = "sendDocument",
+                    chatID = chatID,
+                    fieldName = "document",
+                    fileName = name,
+                    body = file.asRequestBody("application/octet-stream".toMediaType()),
+                    caption = caption,
+                    replyTo = replyTo,
+                )
+            }
+            else -> call("sendDocument", JsonObject().apply {
+                addProperty("chat_id", chatID)
+                addProperty("document", resource)
+                caption?.takeIf(String::isNotBlank)?.let {
+                    addProperty("caption", it.take(MAX_CAPTION_LENGTH))
+                }
+                addReplyParameters(replyTo)
+            })
+        }
+        return rememberMessage(result.asJsonObject)
+    }
+
+    private fun upload(
+        method: String,
+        chatID: Long,
+        fieldName: String,
+        fileName: String,
+        body: RequestBody,
+        caption: String? = null,
+        replyTo: Long? = null,
+    ): JsonElement {
+        val multipart = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("chat_id", chatID.toString())
+            .addFormDataPart(fieldName, fileName, body)
+            .apply {
+                caption?.takeIf(String::isNotBlank)?.let {
+                    addFormDataPart("caption", it.take(MAX_CAPTION_LENGTH))
+                }
+                replyTo?.let {
+                    addFormDataPart(
+                        "reply_parameters",
+                        gson.toJson(JsonObject().apply { addProperty("message_id", it) }),
+                    )
+                }
+            }
+            .build()
+        return execute(method, multipart)
+    }
+
+    private fun call(method: String, params: JsonObject = JsonObject()): JsonElement {
+        return execute(method, gson.toJson(params).toRequestBody(JSON_MEDIA_TYPE))
+    }
+
+    private fun execute(method: String, body: RequestBody): JsonElement {
+        val request = Request.Builder()
+            .url("$apiRoot$method")
+            .post(body)
+            .build()
+        client.newCall(request).execute().use { response ->
+            val responseBody = response.body?.string()
+                ?: throw IllegalStateException("Telegram returned an empty response for $method.")
+            val root = JsonParser.parseString(responseBody).asJsonObject
+            if (!response.isSuccessful || root.get("ok")?.asBoolean != true) {
+                val description = root.get("description")?.asString ?: "HTTP ${response.code}"
+                throw IllegalStateException("Telegram API $method failed: $description")
+            }
+            return root.get("result")
+        }
+    }
+
+    private fun JsonObject.addReplyParameters(replyTo: Long?) {
+        replyTo?.let {
+            add("reply_parameters", JsonObject().apply {
+                addProperty("message_id", it)
+                addProperty("allow_sending_without_reply", true)
+            })
+        }
+    }
+
+    private fun rememberMessage(message: JsonObject): Long {
+        val messageID = message["message_id"].asLong
+        val chatID = message.getAsJsonObject("chat")["id"].asLong
+        messageChats[messageID] = chatID
+        return messageID
+    }
+
+    private fun fileFromResource(resource: String): File {
+        val file = if (resource.startsWith("file://")) {
+            runCatching { File(URI(resource)) }
+                .getOrElse { File(resource.removePrefix("file://")) }
+        } else {
+            File(resource)
+        }
+        require(file.isFile) { "Telegram upload file does not exist: ${file.absolutePath}" }
+        return file
+    }
+
+    private companion object {
+        const val DEFAULT_API_BASE_URL = "https://api.telegram.org"
+        const val POLL_TIMEOUT_SECONDS = 25
+        const val RETRY_DELAY_MILLIS = 2_000L
+        const val MAX_MESSAGE_LENGTH = 4_096
+        const val MAX_CAPTION_LENGTH = 1_024
+        const val MAX_INLINE_RESULTS = 50
+        const val MAX_INLINE_TITLE_LENGTH = 256
+        const val MAX_INLINE_DESCRIPTION_LENGTH = 512
+        const val FORWARD_SEPARATOR = "\n\n──────────\n\n"
+        val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+    }
+}
+
+internal fun normalizeTelegramCommand(
+    text: String,
+    botUsername: String,
+    commandOperator: Char = '/',
+): String? {
+    val trimmed = text.trimStart()
+    if (!trimmed.startsWith(commandOperator)) return text
+    val commandToken = trimmed.substringBefore(' ')
+    val separator = commandToken.indexOf('@')
+    if (separator < 0) return trimmed
+    val addressedBot = commandToken.substring(separator + 1)
+    if (!addressedBot.equals(botUsername, ignoreCase = true)) return null
+    val command = commandToken.substring(0, separator)
+    return command + trimmed.substring(commandToken.length)
+}
+
+internal fun renderTelegramText(message: MessageChain): String =
+    message.asSequence()
+        .filterNot { it is Reply || it is Image || it is FileMessage }
+        .joinToString(separator = "") { item: AbstractMessageObject ->
+            when (item) {
+                is PlainText -> item.text
+                is At -> "@${item.target}"
+                is AtAll -> "@all"
+                else -> item.toString()
+            }
+        }
+        .trim()
+
+internal fun splitTelegramText(text: String, limit: Int = 4_096): List<String> {
+    require(limit > 0) { "Telegram message limit must be positive." }
+    if (text.length <= limit) return listOf(text)
+    val chunks = mutableListOf<String>()
+    var remaining = text
+    while (remaining.length > limit) {
+        val newline = remaining.lastIndexOf('\n', startIndex = limit)
+        val splitAt = newline.takeIf { it > 0 } ?: limit
+        chunks += remaining.substring(0, splitAt).trimEnd()
+        remaining = remaining.substring(splitAt).trimStart('\n')
+    }
+    if (remaining.isNotEmpty()) chunks += remaining
+    return chunks
+}

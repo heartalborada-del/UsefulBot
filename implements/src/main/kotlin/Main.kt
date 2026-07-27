@@ -1,16 +1,20 @@
 import com.google.common.cache.CacheBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import me.heartalborada.QueueExtraData
 import me.heartalborada.bots.napcat.Napcat
+import me.heartalborada.bots.telegram.TelegramBot
 import me.heartalborada.comics.EHentai
 import me.heartalborada.comics.JMComic
 import me.heartalborada.commons.Util
 import me.heartalborada.commons.bots.*
 import me.heartalborada.commons.bots.dto.FileInfo
 import me.heartalborada.commons.bots.dto.ForwardMessageNode
+import me.heartalborada.commons.bots.dto.InlineQueryResult
 import me.heartalborada.commons.bots.dto.MessageSender
+import me.heartalborada.commons.bots.events.message.InlineQueryEvent
 import me.heartalborada.commons.comic.model.ArchiveInformation
 import me.heartalborada.commons.comic.PDFGenerator
 import me.heartalborada.commons.comic.model.ComicInformation
@@ -27,6 +31,7 @@ import me.heartalborada.commons.i18n.Translator
 import me.heartalborada.commons.okhttp.CookieStorageProvider
 import me.heartalborada.commons.queue.ProcessingQueue
 import me.heartalborada.config.Config
+import me.heartalborada.config.ConfigData
 import okhttp3.Cookie
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
@@ -359,16 +364,28 @@ fun main() = runBlocking {
     )
 
     logger.info("Connecting...")
-    val bot = Napcat(
-        config.getConfig().bot.websocketUrl,
-        config.getConfig().bot.token,
-        config.getConfig().bot.isCommandStartWithAt,
-        commandOperator = config.getConfig().bot.commandOperator,
-        useStreamAPI = config.getConfig().bot.fileUpload.useStreamAPI,
-        streamAPIChunkSize = config.getConfig().bot.fileUpload.chunkSize,
-        streamAPIExpireSeconds = config.getConfig().bot.fileUpload.expireSeconds,
-        translator = translator,
-    )
+    val botConfig = config.getConfig().bot
+    val bot: AbstractBot = when (botConfig.adapter) {
+        ConfigData.Bot.Adapter.NAPCAT -> Napcat(
+            botConfig.napcat.websocketUrl,
+            botConfig.napcat.token,
+            botConfig.isCommandStartWithAt,
+            commandOperator = botConfig.commandOperator,
+            useStreamAPI = botConfig.napcat.fileUpload.useStreamAPI,
+            streamAPIChunkSize = botConfig.napcat.fileUpload.chunkSize,
+            streamAPIExpireSeconds = botConfig.napcat.fileUpload.expireSeconds,
+            translator = translator,
+        )
+        ConfigData.Bot.Adapter.TELEGRAM -> TelegramBot(
+            token = botConfig.telegram.token,
+            apiBaseUrl = botConfig.telegram.apiBaseUrl,
+            parentClient = client,
+            commandOperator = botConfig.commandOperator,
+            translator = translator,
+            inlineModeEnabled = botConfig.telegram.enableInlineMode,
+            autoConnect = false,
+        )
+    }
 
     bot.registerCommand("about", usage = translator.translate("command.about.usage")) {
         sender, _, _, messageID ->
@@ -540,6 +557,63 @@ fun main() = runBlocking {
         )
     }
 
+    bot.getEventBus().register(InlineQueryEvent::class.java) { event ->
+        launch(Dispatchers.IO) {
+            val query = event.query.trim()
+            val source = query.substringBefore(' ').lowercase()
+            val rawArguments = query.substringAfter(' ', "")
+            val arguments = runCatching {
+                require(source == "eh" || source == "jm")
+                parseSearchCommandArguments(
+                    input = rawArguments,
+                    allowGalleryFilters = source == "eh",
+                )
+            }.getOrElse {
+                bot.answerInlineQuery(event.queryID, emptyList())
+                return@launch
+            }
+            val page = event.offset.toIntOrNull()
+                ?.takeIf { it > 0 }
+                ?: arguments.page
+            val searchPage = runCatching {
+                if (source == "eh") {
+                    eh.search(arguments.keyword, page, arguments.options)
+                } else {
+                    jm.search(arguments.keyword, page, arguments.options)
+                }
+            }.getOrElse { exception ->
+                logger.warn("Telegram inline search failed for {} page {}: {}", source, page, query, exception)
+                bot.answerInlineQuery(event.queryID, emptyList())
+                return@launch
+            }
+            val inlineResults = searchPage.results.take(SEARCH_RESULT_LIMIT).mapIndexed { index, result ->
+                InlineQueryResult(
+                    id = "${source}_${page}_${result.id.hashCode().toUInt()}_$index",
+                    title = result.title,
+                    description = listOfNotNull(
+                        result.subtitle,
+                        result.category,
+                        result.pages?.let { translator.translate("gallery.pages", it) },
+                        result.rating?.let { translator.translate("gallery.rating", it) },
+                    ).joinToString(" · ").takeIf(String::isNotBlank),
+                    url = result.url,
+                    message = formatSearchResult(
+                        source = source,
+                        result = result,
+                        index = index + 1,
+                        commandOperator = botConfig.commandOperator,
+                        translator = translator,
+                    ),
+                )
+            }
+            bot.answerInlineQuery(
+                queryID = event.queryID,
+                results = inlineResults,
+                nextOffset = (page + 1).toString().takeIf { searchPage.hasNextPage },
+            )
+        }
+    }
+
     bot.registerCommand("checkin", usage = translator.translate("command.checkin.usage")) {
         sender, _, _, messageID ->
         val userId = sender.user.userID.toULong()
@@ -569,6 +643,10 @@ fun main() = runBlocking {
             messageID,
             translator.translate("command.info.content", user.role.name, user.balance, lastCheckIn)
         )
+    }
+
+    if (bot is TelegramBot) {
+        bot.connect()
     }
 
     for (i in 1..config.getConfig().comicParallelCount) {

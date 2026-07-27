@@ -3,6 +3,7 @@ package me.heartalborada.config
 import com.google.gson.annotations.SerializedName
 
 data class ConfigData @JvmOverloads constructor(
+    @SerializedName("version") val version: Int = CURRENT_VERSION,
     @SerializedName("Bot") val bot: Bot = Bot(),
     @SerializedName("Proxy") val proxy: Proxy = Proxy(),
     @SerializedName("Ehentai") val eHentai: EHentai = EHentai(),
@@ -10,18 +11,35 @@ data class ConfigData @JvmOverloads constructor(
     @SerializedName("ComicParallelCount") val comicParallelCount: Int = 2,
 ) {
     data class Bot @JvmOverloads constructor(
-        @SerializedName("WebsocketURL") val websocketUrl: String = "ws://127.0.0.1:3000",
-        @SerializedName("Token") val token: String = "napcat!",
+        @SerializedName("Adapter") val adapter: Adapter = Adapter.NAPCAT,
         @SerializedName("CommandOperator") val commandOperator: Char = '/',
         @SerializedName("IsCommandStartWithAt") val isCommandStartWithAt: Boolean = false,
         @SerializedName("Language") val language: String = "en",
-        @SerializedName("FileUpload") val fileUpload: FileUpload = FileUpload(),
+        @SerializedName(value = "napcat", alternate = ["Napcat"]) val napcat: Napcat = Napcat(),
+        @SerializedName(value = "telegram", alternate = ["Telegram"]) val telegram: Telegram = Telegram(),
     ) {
-        data class FileUpload @JvmOverloads constructor(
-            @SerializedName("ChunkSize") val chunkSize: Int = 512 * 1024,
-            @SerializedName("UseStreamAPI") val useStreamAPI: Boolean = false,
-            @SerializedName("Stream_ExpireSeconds") val expireSeconds: Long = 600,
+        enum class Adapter {
+            NAPCAT,
+            TELEGRAM,
+        }
+
+        data class Napcat @JvmOverloads constructor(
+            @SerializedName("WebsocketURL") val websocketUrl: String = "ws://127.0.0.1:3000",
+            @SerializedName("Token") val token: String = "napcat!",
+            @SerializedName("FileUpload") val fileUpload: FileUpload = FileUpload(),
+        ) {
+            data class FileUpload @JvmOverloads constructor(
+                @SerializedName("ChunkSize") val chunkSize: Int = 512 * 1024,
+                @SerializedName("UseStreamAPI") val useStreamAPI: Boolean = false,
+                @SerializedName("Stream_ExpireSeconds") val expireSeconds: Long = 600,
             )
+        }
+
+        data class Telegram @JvmOverloads constructor(
+            @SerializedName("Token") val token: String = "",
+            @SerializedName("ApiBaseURL") val apiBaseUrl: String = "https://api.telegram.org",
+            @SerializedName("EnableInlineMode") val enableInlineMode: Boolean = true,
+        )
     }
 
     data class Proxy @JvmOverloads constructor(
@@ -58,4 +76,8 @@ data class ConfigData @JvmOverloads constructor(
         ),
         @SerializedName("ImageParallelCount") val imageParallelCount: Int = 8,
     )
+
+    companion object {
+        const val CURRENT_VERSION = 2
+    }
 }

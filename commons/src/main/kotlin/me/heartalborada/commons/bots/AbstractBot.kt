@@ -5,6 +5,7 @@ import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.dto.FileInfo
 import me.heartalborada.commons.bots.dto.ForwardMessageNode
 import me.heartalborada.commons.bots.dto.ForwardMessageResult
+import me.heartalborada.commons.bots.dto.InlineQueryResult
 import me.heartalborada.commons.bots.dto.MessageSender
 import me.heartalborada.commons.bots.events.EventBus
 import me.heartalborada.commons.bots.events.message.GroupMessageEvent
@@ -95,6 +96,15 @@ abstract class AbstractBot(
         target: Long,
         messages: List<ForwardMessageNode>,
     ): ForwardMessageResult
+
+    /**
+     * Answers a platform-native inline query when supported.
+     */
+    open fun answerInlineQuery(
+        queryID: String,
+        results: List<InlineQueryResult>,
+        nextOffset: String? = null,
+    ): Boolean = false
 
     abstract fun recallMessage(messageID: Long): Boolean
 
