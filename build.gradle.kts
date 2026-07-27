@@ -3,7 +3,7 @@ plugins {
 }
 
 group = "me.heartalborada"
-version = "1.1.0"
+version = "1.1.1"
 
 val exposedVersion: String by project
 allprojects {

@@ -74,7 +74,7 @@ class AbstractBotCommandTest {
 
     @Test
     fun `built-in command replies use the configured language`() {
-        val bot = FakeBot(Translator("zh-CN"))
+        val bot = FakeBot(testTranslator(chinese = true))
         bot.connect()
 
         bot.broadcast("/missing", messageID = 12L)
@@ -172,7 +172,33 @@ class AbstractBotCommandTest {
         block: suspend (MessageSender, String, MessageChain, Long) -> Unit
     ): CommandExecutor = CommandExecutor(block)
 
-    private inner class FakeBot(translator: Translator = Translator()) :
+    private fun testTranslator(chinese: Boolean = false): Translator {
+        val messages = if (chinese) {
+            mapOf(
+                "command.help.header" to "可用命令：",
+                "command.help.usage" to "显示此命令列表。",
+                "command.help.subcommands" to "可用子命令：",
+                "command.unknown" to "未知命令“{0}”。",
+                "command.execution_failed" to "命令执行失败，请稍后重试或联系管理员。",
+            )
+        } else {
+            mapOf(
+                "command.help.header" to "Available commands:",
+                "command.help.usage" to "Show this command list.",
+                "command.help.subcommands" to "Available subcommands:",
+                "command.unknown" to "Unknown command \"{0}\".",
+                "command.execution_failed" to
+                    "Command execution failed. Please try again later or contact the administrator.",
+            )
+        }
+        return Translator { key, arguments ->
+            arguments.foldIndexed(messages[key] ?: key) { index, result, argument ->
+                result.replace("{$index}", argument?.toString().orEmpty())
+            }
+        }
+    }
+
+    private inner class FakeBot(translator: Translator = testTranslator()) :
         AbstractBot(commandStartWithAt = false, translator = translator) {
         val events = EventBus()
         val sent = LinkedBlockingQueue<MessageChain>()

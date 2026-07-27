@@ -1,4 +1,4 @@
-package me.heartalborada.commons.i18n
+package me.heartalborada.i18n
 
 import java.io.InputStreamReader
 import java.nio.charset.StandardCharsets
@@ -6,10 +6,10 @@ import java.util.Properties
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-class TranslatorTest {
+class PropertiesTranslatorTest {
     @Test
     fun `selects Chinese and replaces placeholders`() {
-        val translator = Translator("zh-CN")
+        val translator = PropertiesTranslator("zh-CN")
 
         assertEquals(
             "签到成功：+50 GP。当前余额：120 GP。",
@@ -19,17 +19,17 @@ class TranslatorTest {
 
     @Test
     fun `unknown languages and missing keys fall back safely`() {
-        val translator = Translator("unsupported-language")
+        val translator = PropertiesTranslator("unsupported-language")
 
         assertEquals("Available commands:", translator.translate("command.help.header"))
         assertEquals("missing.translation.key", translator.translate("missing.translation.key"))
-        assertEquals("Available commands:", Translator(null).translate("command.help.header"))
+        assertEquals("Available commands:", PropertiesTranslator(null).translate("command.help.header"))
     }
 
     @Test
     fun `bundled languages contain the same translation keys`() {
-        val english = load("i18n/messages_en.properties")
-        val chinese = load("i18n/messages_zh_CN.properties")
+        val english = load(PropertiesTranslator.ENGLISH_RESOURCE)
+        val chinese = load(PropertiesTranslator.CHINESE_RESOURCE)
 
         assertEquals(english.stringPropertyNames(), chinese.stringPropertyNames())
     }

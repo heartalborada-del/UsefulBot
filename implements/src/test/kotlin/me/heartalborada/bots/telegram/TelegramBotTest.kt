@@ -1,14 +1,22 @@
 package me.heartalborada.bots.telegram
 
 import com.google.gson.JsonParser
+import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.At
 import me.heartalborada.commons.bots.Image
 import me.heartalborada.commons.bots.MessageChain
 import me.heartalborada.commons.bots.PlainText
 import me.heartalborada.commons.bots.Reply
 import me.heartalborada.commons.bots.dto.FileInfo
+import me.heartalborada.commons.bots.dto.ForwardMessageNode
 import me.heartalborada.commons.bots.events.message.InlineQueryEvent
 import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Buffer
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
@@ -44,6 +52,64 @@ class TelegramBotTest {
 
         assertTrue(chunks.all { it.length <= 10 })
         assertEquals(listOf("first", "xxxxxxxxxx", "xxxxxxxxxx"), chunks)
+    }
+
+    @Test
+    fun `renders search result command as Telegram Markdown code`() {
+        assertEquals(
+            "\\#9\n标题：Example\n获取：`/get eh https://e-hentai.org/g/1/token/`",
+            renderTelegramMarkdownV2(
+                "#9\n标题：Example\n获取：`/get eh https://e-hentai.org/g/1/token/`"
+            ),
+        )
+    }
+
+    @Test
+    fun `sends forwarded search results separately and quotes the search message`() {
+        val requestBodies = mutableListOf<String>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                requestBodies += Buffer().also { chain.request().body!!.writeTo(it) }.readUtf8()
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(
+                        """
+                            {"ok":true,"result":{"message_id":${requestBodies.size},"chat":{"id":123}}}
+                        """.trimIndent().toResponseBody("application/json".toMediaType())
+                    )
+                    .build()
+            }
+            .build()
+        val bot = TelegramBot(
+            token = "test-token",
+            apiBaseUrl = "https://telegram.test",
+            parentClient = client,
+            autoConnect = false,
+        )
+        val results = listOf("#1\n获取：`/get eh first`", "#2\n获取：`/get eh second`")
+            .map { text ->
+                ForwardMessageNode.CustomMessage(
+                    nickname = "result",
+                    content = MessageChain().apply {
+                        add(Reply(99L))
+                        add(PlainText(text))
+                    },
+                )
+            }
+
+        bot.sendForwardMessage(ChatType.PRIVATE, 123L, results)
+
+        assertEquals(2, requestBodies.size)
+        requestBodies.forEachIndexed { index, body ->
+            val json = JsonParser.parseString(body).asJsonObject
+            assertEquals("\\#${index + 1}\n获取：`/get eh ${if (index == 0) "first" else "second"}`", json["text"].asString)
+            assertEquals("MarkdownV2", json["parse_mode"].asString)
+            assertEquals(99L, json.getAsJsonObject("reply_parameters")["message_id"].asLong)
+        }
+        bot.close()
     }
 
     @Test

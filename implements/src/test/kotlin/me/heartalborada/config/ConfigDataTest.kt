@@ -31,14 +31,16 @@ class ConfigDataTest {
         )
 
         assertEquals("en", config.bot.language)
-        assertEquals(ConfigData.Bot.Adapter.NAPCAT, config.bot.adapter)
+        assertTrue(config.bot.napcat.enabled)
+        assertTrue(config.bot.napcat.blurImages)
         assertEquals("ws://napcat.example", config.bot.napcat.websocketUrl)
         assertEquals("napcat-token", config.bot.napcat.token)
         assertEquals(512 * 1024, config.bot.napcat.fileUpload.chunkSize)
+        assertFalse(config.bot.telegram.enabled)
+        assertFalse(config.bot.telegram.blurImages)
         assertEquals("telegram-token", config.bot.telegram.token)
         assertEquals("https://api.telegram.org", config.bot.telegram.apiBaseUrl)
         assertEquals(false, config.bot.telegram.enableInlineMode)
-        assertFalse(config.blurImages)
         assertEquals(8, config.jmComic.imageParallelCount)
         assertEquals("https://jm365.work/3YeBdF", config.jmComic.redirectUrl)
         assertEquals("www.cdnhjk.net", config.jmComic.apiDomains.first())
@@ -75,7 +77,10 @@ class ConfigDataTest {
             assertEquals("legacy-token", config.bot.napcat.token)
             assertEquals(1024, config.bot.napcat.fileUpload.chunkSize)
             assertEquals("telegram-token", config.bot.telegram.token)
-            assertTrue(config.blurImages)
+            assertTrue(config.bot.napcat.enabled)
+            assertTrue(config.bot.napcat.blurImages)
+            assertFalse(config.bot.telegram.enabled)
+            assertFalse(config.bot.telegram.blurImages)
 
             val upgraded = JsonParser.parseString(configFile.readText()).asJsonObject
             val bot = upgraded.getAsJsonObject("Bot")
@@ -86,8 +91,9 @@ class ConfigDataTest {
             assertFalse(bot.has("Token"))
             assertFalse(bot.has("FileUpload"))
             assertFalse(bot.has("Telegram"))
+            assertFalse(bot.has("Adapter"))
             assertTrue(upgraded.getAsJsonObject("UnknownSetting").get("keep").asBoolean)
-            assertTrue(upgraded.get("BlurImages").asBoolean)
+            assertFalse(upgraded.has("BlurImages"))
             assertAllDefaultFieldsPresent(
                 actual = upgraded,
                 defaults = Gson().toJsonTree(ConfigData()).asJsonObject,
@@ -108,9 +114,13 @@ class ConfigDataTest {
             val config = Config(configFile).getConfig()
 
             assertEquals(ConfigData.CURRENT_VERSION, config.version)
-            assertFalse(config.blurImages)
+            assertFalse(config.bot.napcat.enabled)
+            assertTrue(config.bot.napcat.blurImages)
+            assertTrue(config.bot.telegram.enabled)
+            assertFalse(config.bot.telegram.blurImages)
             val upgraded = JsonParser.parseString(configFile.readText()).asJsonObject
-            assertFalse(upgraded.get("BlurImages").asBoolean)
+            assertFalse(upgraded.has("BlurImages"))
+            assertFalse(upgraded.getAsJsonObject("Bot").has("Adapter"))
             assertEquals(
                 "https://api.telegram.org",
                 upgraded.getAsJsonObject("Bot")
@@ -137,11 +147,38 @@ class ConfigDataTest {
             val config = Config(configFile).getConfig()
 
             assertEquals(999, config.version)
-            assertEquals(ConfigData.Bot.Adapter.TELEGRAM, config.bot.adapter)
             assertEquals(original, configFile.readText())
         } finally {
             configFile.delete()
         }
+    }
+
+    @Test
+    fun `both adapters can be enabled with independent image blur settings`() {
+        val config = Gson().fromJson(
+            """
+                {
+                  "version": 4,
+                  "Bot": {
+                    "napcat": {
+                      "Enabled": true,
+                      "BlurImages": false
+                    },
+                    "telegram": {
+                      "Enabled": true,
+                      "BlurImages": true,
+                      "Token": "telegram-token"
+                    }
+                  }
+                }
+            """.trimIndent(),
+            ConfigData::class.java,
+        )
+
+        assertTrue(config.bot.napcat.enabled)
+        assertFalse(config.bot.napcat.blurImages)
+        assertTrue(config.bot.telegram.enabled)
+        assertTrue(config.bot.telegram.blurImages)
     }
 
     private fun assertAllDefaultFieldsPresent(actual: JsonObject, defaults: JsonObject, path: String = "") {

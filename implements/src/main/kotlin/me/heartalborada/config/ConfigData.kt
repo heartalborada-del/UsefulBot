@@ -9,22 +9,17 @@ data class ConfigData @JvmOverloads constructor(
     @SerializedName("Ehentai") val eHentai: EHentai = EHentai(),
     @SerializedName("JMComic") val jmComic: JMComic = JMComic(),
     @SerializedName("ComicParallelCount") val comicParallelCount: Int = 2,
-    @SerializedName("BlurImages") val blurImages: Boolean = false,
 ) {
     data class Bot @JvmOverloads constructor(
-        @SerializedName("Adapter") val adapter: Adapter = Adapter.NAPCAT,
         @SerializedName("CommandOperator") val commandOperator: Char = '/',
         @SerializedName("IsCommandStartWithAt") val isCommandStartWithAt: Boolean = false,
         @SerializedName("Language") val language: String = "en",
         @SerializedName(value = "napcat", alternate = ["Napcat"]) val napcat: Napcat = Napcat(),
         @SerializedName(value = "telegram", alternate = ["Telegram"]) val telegram: Telegram = Telegram(),
     ) {
-        enum class Adapter {
-            NAPCAT,
-            TELEGRAM,
-        }
-
         data class Napcat @JvmOverloads constructor(
+            @SerializedName("Enabled") val enabled: Boolean = true,
+            @SerializedName("BlurImages") val blurImages: Boolean = true,
             @SerializedName("WebsocketURL") val websocketUrl: String = "ws://127.0.0.1:3000",
             @SerializedName("Token") val token: String = "napcat!",
             @SerializedName("FileUpload") val fileUpload: FileUpload = FileUpload(),
@@ -37,6 +32,8 @@ data class ConfigData @JvmOverloads constructor(
         }
 
         data class Telegram @JvmOverloads constructor(
+            @SerializedName("Enabled") val enabled: Boolean = false,
+            @SerializedName("BlurImages") val blurImages: Boolean = false,
             @SerializedName("Token") val token: String = "",
             @SerializedName("ApiBaseURL") val apiBaseUrl: String = "https://api.telegram.org",
             @SerializedName("EnableInlineMode") val enableInlineMode: Boolean = true,
@@ -79,6 +76,6 @@ data class ConfigData @JvmOverloads constructor(
     )
 
     companion object {
-        const val CURRENT_VERSION = 3
+        const val CURRENT_VERSION = 4
     }
 }

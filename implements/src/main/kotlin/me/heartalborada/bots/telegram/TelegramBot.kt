@@ -32,6 +32,7 @@ import me.heartalborada.commons.bots.events.message.GroupMessageEvent
 import me.heartalborada.commons.bots.events.message.InlineQueryEvent
 import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
 import me.heartalborada.commons.i18n.Translator
+import me.heartalborada.i18n.PropertiesTranslator
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -53,7 +54,7 @@ class TelegramBot(
     apiBaseUrl: String = DEFAULT_API_BASE_URL,
     parentClient: OkHttpClient = OkHttpClient(),
     commandOperator: Char = '/',
-    translator: Translator = Translator(),
+    translator: Translator = PropertiesTranslator(),
     private val inlineModeEnabled: Boolean = true,
     autoConnect: Boolean = true,
 ) : AbstractBot(
@@ -72,6 +73,7 @@ class TelegramBot(
     private val apiRoot: String
     private val commandOperator = commandOperator
     private val messageChats = ConcurrentHashMap<Long, Long>()
+    private val chatSendLocks = Array(CHAT_SEND_LOCK_COUNT) { Any() }
 
     @Volatile
     private var botID: Long = 0L
@@ -132,25 +134,37 @@ class TelegramBot(
     ): ForwardMessageResult {
         require(type == ChatType.PRIVATE || type == ChatType.GROUP) { "Unsupported Telegram chat type: $type" }
         require(messages.isNotEmpty()) { "Forward messages must not be empty." }
-        val sentMessageIDs = mutableListOf<Long>()
-        val customText = messages.filterIsInstance<ForwardMessageNode.CustomMessage>()
-            .joinToString(FORWARD_SEPARATOR) { renderTelegramText(it.content) }
-            .trim()
-        if (customText.isNotEmpty()) {
-            sentMessageIDs += sendText(target, customText)
-        }
-        messages.filterIsInstance<ForwardMessageNode.ExistingMessage>().forEach { node ->
-            val sourceChat = messageChats[node.messageID] ?: return@forEach
-            val params = JsonObject().apply {
-                addProperty("chat_id", target)
-                addProperty("from_chat_id", sourceChat)
-                addProperty("message_id", node.messageID)
+        return synchronized(chatSendLock(target)) {
+            val sentMessageIDs = mutableListOf<Long>()
+            messages.forEach { node ->
+                when (node) {
+                    is ForwardMessageNode.CustomMessage -> {
+                        val text = renderTelegramText(node.content)
+                        if (text.isNotBlank()) {
+                            val replyTo = node.content.filterIsInstance<Reply>().firstOrNull()?.id
+                            sentMessageIDs += sendText(
+                                chatID = target,
+                                text = text,
+                                replyTo = replyTo,
+                                markdownV2 = true,
+                            )
+                        }
+                    }
+                    is ForwardMessageNode.ExistingMessage -> {
+                        val sourceChat = messageChats[node.messageID] ?: return@forEach
+                        val params = JsonObject().apply {
+                            addProperty("chat_id", target)
+                            addProperty("from_chat_id", sourceChat)
+                            addProperty("message_id", node.messageID)
+                        }
+                        val result = call("forwardMessage", params).asJsonObject
+                        sentMessageIDs += rememberMessage(result)
+                    }
+                }
             }
-            val result = call("forwardMessage", params).asJsonObject
-            sentMessageIDs += rememberMessage(result)
+            check(sentMessageIDs.isNotEmpty()) { "No Telegram forward nodes could be delivered." }
+            ForwardMessageResult(sentMessageIDs.first())
         }
-        check(sentMessageIDs.isNotEmpty()) { "No Telegram forward nodes could be delivered." }
-        return ForwardMessageResult(sentMessageIDs.first())
     }
 
     override fun answerInlineQuery(
@@ -173,7 +187,11 @@ class TelegramBot(
                         }
                         result.url?.takeIf(String::isNotBlank)?.let { addProperty("url", it) }
                         add("input_message_content", JsonObject().apply {
-                            addProperty("message_text", result.message.take(MAX_MESSAGE_LENGTH))
+                            addProperty(
+                                "message_text",
+                                renderTelegramMarkdownV2(result.message).take(MAX_MESSAGE_LENGTH),
+                            )
+                            addProperty("parse_mode", "MarkdownV2")
                         })
                     })
                 }
@@ -312,13 +330,20 @@ class TelegramBot(
         )
     }
 
-    private fun sendText(chatID: Long, text: String, replyTo: Long? = null): Long {
+    private fun sendText(
+        chatID: Long,
+        text: String,
+        replyTo: Long? = null,
+        markdownV2: Boolean = false,
+    ): Long {
         require(text.isNotBlank()) { "Telegram message text must not be blank." }
         var firstMessageID: Long? = null
-        splitTelegramText(text).forEachIndexed { index, chunk ->
+        val renderedText = if (markdownV2) renderTelegramMarkdownV2(text) else text
+        splitTelegramText(renderedText).forEachIndexed { index, chunk ->
             val params = JsonObject().apply {
                 addProperty("chat_id", chatID)
                 addProperty("text", chunk)
+                if (markdownV2) addProperty("parse_mode", "MarkdownV2")
                 if (index == 0) addReplyParameters(replyTo)
             }
             val messageID = rememberMessage(call("sendMessage", params).asJsonObject)
@@ -474,6 +499,9 @@ class TelegramBot(
         return messageID
     }
 
+    private fun chatSendLock(chatID: Long): Any =
+        chatSendLocks[Math.floorMod(chatID.hashCode(), chatSendLocks.size)]
+
     private fun fileFromResource(resource: String): File {
         val file = if (resource.startsWith("file://")) {
             runCatching { File(URI(resource)) }
@@ -494,7 +522,7 @@ class TelegramBot(
         const val MAX_INLINE_RESULTS = 50
         const val MAX_INLINE_TITLE_LENGTH = 256
         const val MAX_INLINE_DESCRIPTION_LENGTH = 512
-        const val FORWARD_SEPARATOR = "\n\n──────────\n\n"
+        const val CHAT_SEND_LOCK_COUNT = 64
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }
@@ -528,6 +556,31 @@ internal fun renderTelegramText(message: MessageChain): String =
         }
         .trim()
 
+internal fun renderTelegramMarkdownV2(text: String): String {
+    val closingCode = text.lastIndexOf('`')
+    val openingCode = if (closingCode > 0) text.lastIndexOf('`', closingCode - 1) else -1
+    if (openingCode < 0) return escapeTelegramMarkdownV2(text)
+
+    return buildString {
+        append(escapeTelegramMarkdownV2(text.substring(0, openingCode)))
+        append('`')
+        append(
+            text.substring(openingCode + 1, closingCode)
+                .replace("\\", "\\\\")
+                .replace("`", "\\`")
+        )
+        append('`')
+        append(escapeTelegramMarkdownV2(text.substring(closingCode + 1)))
+    }
+}
+
+private fun escapeTelegramMarkdownV2(text: String): String = buildString {
+    text.forEach { character ->
+        if (character in TELEGRAM_MARKDOWN_V2_SPECIAL_CHARACTERS) append('\\')
+        append(character)
+    }
+}
+
 internal fun splitTelegramText(text: String, limit: Int = 4_096): List<String> {
     require(limit > 0) { "Telegram message limit must be positive." }
     if (text.length <= limit) return listOf(text)
@@ -542,3 +595,5 @@ internal fun splitTelegramText(text: String, limit: Int = 4_096): List<String> {
     if (remaining.isNotEmpty()) chunks += remaining
     return chunks
 }
+
+private const val TELEGRAM_MARKDOWN_V2_SPECIAL_CHARACTERS = "_*[]()~`>#+-=|{}.!"

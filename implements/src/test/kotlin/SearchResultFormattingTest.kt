@@ -1,5 +1,5 @@
 import me.heartalborada.commons.comic.model.ComicSearchResult
-import me.heartalborada.commons.i18n.Translator
+import me.heartalborada.i18n.PropertiesTranslator
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -24,14 +24,13 @@ class SearchResultFormattingTest {
             ),
             index = 9,
             commandOperator = '/',
-            translator = Translator("zh-CN"),
+            translator = PropertiesTranslator("zh-CN"),
         )
 
         assertEquals(
             """
-                搜索结果 #9 · E-Hentai
+                #9
                 标题：Example
-                上传者：uploader
                 类型：Doujinshi
                 页数：6
                 评分：1.5
@@ -41,7 +40,7 @@ class SearchResultFormattingTest {
                   female: big breasts, sole female
 
                 链接：https://e-hentai.org/g/4078683/d02aff1a3e/
-                获取：/get eh https://e-hentai.org/g/4078683/d02aff1a3e/
+                获取：`/get eh https://e-hentai.org/g/4078683/d02aff1a3e/`
             """.trimIndent(),
             text,
         )

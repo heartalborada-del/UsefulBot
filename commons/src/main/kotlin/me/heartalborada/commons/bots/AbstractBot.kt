@@ -22,7 +22,7 @@ abstract class AbstractBot(
     private val commandStartWithAt: Boolean = true,
     private val commandOperator: Char = '/',
     private val commandDivider: Char = ' ',
-    protected val translator: Translator = Translator(),
+    protected val translator: Translator,
 ) {
     private val logger: Logger = LoggerFactory.getLogger(this::class.java)
     private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->

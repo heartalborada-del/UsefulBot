@@ -4,6 +4,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import me.heartalborada.QueueExtraData
+import me.heartalborada.QueueUser
 import me.heartalborada.bots.napcat.Napcat
 import me.heartalborada.bots.telegram.TelegramBot
 import me.heartalborada.comics.EHentai
@@ -26,12 +27,12 @@ import me.heartalborada.commons.comparator.NaturalFileNameComparator
 import me.heartalborada.commons.downloader.DownloadManager
 import me.heartalborada.commons.economic.ComicPricing
 import me.heartalborada.commons.economic.EconomicManager
-import me.heartalborada.commands.parseSearchCommandArguments
 import me.heartalborada.commons.i18n.Translator
+import me.heartalborada.commands.parseSearchCommandArguments
 import me.heartalborada.commons.okhttp.CookieStorageProvider
 import me.heartalborada.commons.queue.ProcessingQueue
 import me.heartalborada.config.Config
-import me.heartalborada.config.ConfigData
+import me.heartalborada.i18n.PropertiesTranslator
 import okhttp3.Cookie
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
@@ -68,7 +69,7 @@ private val logger = LoggerFactory.getLogger("Main")
 private val ALLOW_SUFFIX = setOf("jpg", "jpeg", "gif", "png", "webp")
 
 private val config = Config(File(rootFolder, "config.json"))
-private val translator = Translator(config.getConfig().bot.language)
+private val translator = PropertiesTranslator(config.getConfig().bot.language)
 
 private val economicDataSource = run {
     dataFolder.mkdirs()
@@ -88,7 +89,26 @@ private sealed interface ComicTask {
     data class JMComic(val albumId: String) : ComicTask
 }
 
-private val queue = ProcessingQueue<Long, ComicTask, QueueExtraData>(
+private sealed interface ComicTaskResult {
+    data class EHentai(
+        val gallery: Pair<String, String>,
+        val info: ComicInformation<*>,
+        val cover: File,
+        val pdf: File?,
+        val cacheHit: Boolean,
+        val cost: Long,
+    ) : ComicTaskResult
+
+    data class JMComic(
+        val albumId: String,
+        val info: ComicInformation<*>,
+        val cover: File,
+        val pdf: File,
+        val cacheHit: Boolean,
+    ) : ComicTaskResult
+}
+
+private val queue = ProcessingQueue<QueueUser, ComicTask, QueueExtraData>(
     globalCapacity = config.getConfig().comicParallelCount
 )
 
@@ -103,9 +123,10 @@ fun main() = runBlocking {
         sender: MessageSender,
         messageID: Long,
         bot: AbstractBot,
+        blurImages: Boolean,
     ) {
         val image = ImageIO.read(coverFile) ?: throw IllegalStateException("Failed to decode comic cover.")
-        val displayImage = if (config.getConfig().blurImages) {
+        val displayImage = if (blurImages) {
             Util.gaussianBlur(Util.resampleImage(Util.resampleImage(image, 0.125), 8.0), radius = 10)
         } else {
             image
@@ -130,7 +151,7 @@ fun main() = runBlocking {
         bot.sendMessage(sender.type, sender.target, message)
     }
 
-    fun queueProcess(gallery: Pair<String, String>, sender: MessageSender, messageID: Long, bot: AbstractBot) {
+    suspend fun generateEHentai(gallery: Pair<String, String>): ComicTaskResult.EHentai {
         val cacheKey = "eh:${gallery.first}:${gallery.second}"
         val p = File(ehPdfFolder, "${gallery.first}-${gallery.second}.pdf")
         val cf = File(ehImgFolder, "${gallery.first}-${gallery.second}")
@@ -142,103 +163,145 @@ fun main() = runBlocking {
         val downloader = DownloadManager(16, client, File(ehTempFolder, "download"))
         val cover = "cover.${Util.getFileExtensionFromUrl(URL(info.cover))}"
         downloader.downloadFiles(listOf(Pair(info.cover, cover)), cf, 2)
-        sendComicInformation(info, File(cf, cover), sender, messageID, bot)
         if (pdfCache.getIfPresent(cacheKey) == true || p.exists()) {
-            bot.reply(sender, messageID, translator.translate("gallery.cache_hit"))
-            val sent = bot.sendFile(
-                sender.type,
-                sender.target,
-                "${gallery.first}-${gallery.second}.pdf",
-                File(ehPdfFolder, "${gallery.first}-${gallery.second}.pdf")
+            return ComicTaskResult.EHentai(
+                gallery = gallery,
+                info = info,
+                cover = File(cf, cover),
+                pdf = p,
+                cacheHit = true,
+                cost = 0,
             )
-            if (!sent) {
-                bot.reply(sender, messageID, translator.translate("gallery.cache_send_failed"))
-            }
-            return
         }
 
         val archive = eh.getArchiveInformation(gallery).firstOrNull { it.name == "RESAMPLE" }
         if (archive == null) {
-            bot.reply(sender, messageID, translator.translate("gallery.archive_unavailable"))
-            return
+            return ComicTaskResult.EHentai(
+                gallery = gallery,
+                info = info,
+                cover = File(cf, cover),
+                pdf = null,
+                cacheHit = false,
+                cost = 0,
+            )
         }
         val cost = kotlin.math.ceil(
             Util.convertToBytes(archive.size.replace(" ", "")).toDouble() / 1024 / 1024
         ).toLong().coerceAtLeast(1L)
-        val userId = sender.user.userID.toULong()
-        if (!economic.withdrawGP(userId, cost)) {
-            bot.reply(
-                sender,
-                messageID,
-                translator.translate("gallery.insufficient_gp", cost, economic.getBalance(userId))
+        val subscribers = queue.getSubscribers(ComicTask.EHentai(gallery)).map { it.second }
+        if (subscribers.none { extra ->
+                economic.getBalance(extra.sender.user.userID.toULong()) >= cost
+            }
+        ) {
+            return ComicTaskResult.EHentai(
+                gallery = gallery,
+                info = info,
+                cover = File(cf, cover),
+                pdf = null,
+                cacheHit = false,
+                cost = cost,
             )
-            return
         }
 
-        var refunded = false
-        try {
-            bot.reply(
-                sender,
-                messageID,
-                translator.translate("gallery.preparing", cost, economic.getBalance(userId))
-            )
+        val archiveUrl = eh.getArchiveDownloadUrl(gallery, ArchiveInformation("RESAMPLE"))
+        var count = 0
+        var list = mutableListOf<Pair<String, String?>>(Pair(archiveUrl, "${gallery.first}-${gallery.second}.zip"))
+        while (list.isNotEmpty()) {
+            check(count < 3) { "Failed to download the E-Hentai archive after 3 attempts." }
+            count++
+            list = downloader.downloadFiles(list, ehArchiveFolder, 4)
+        }
+        Util.unzip(File(ehArchiveFolder, "${gallery.first}-${gallery.second}.zip"), cf)
+        ehPdfFolder.mkdirs()
+        val comparator = NaturalFileNameComparator()
+        val pages = cf.listFiles { file ->
+            ALLOW_SUFFIX.contains(
+                Util.getFileExtensionFromUrl(
+                    file.toURI().toURL()
+                )
+            ) && file.name.substringBeforeLast(".") != "cover" && file.isFile
+        }?.sortedWith(comparator).orEmpty()
+        check(pages.isNotEmpty()) { "No supported images were found in the downloaded archive." }
+        PDFGenerator.generatePDF(
+            pages,
+            pdfFile = p, tempDir = File(ehTempFolder, "pdf"),
+            password = "${gallery.first}-${gallery.second}",
+            signatureText = "Generated at:${
+                Instant.now().atZone(ZoneOffset.UTC)
+                    .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ssZZZZZ"))
+            }"
+        )
+        pdfCache.put(cacheKey, true)
+        return ComicTaskResult.EHentai(
+            gallery = gallery,
+            info = info,
+            cover = File(cf, cover),
+            pdf = p,
+            cacheHit = false,
+            cost = cost,
+        )
+    }
 
-            val archiveUrl = eh.getArchiveDownloadUrl(gallery, ArchiveInformation("RESAMPLE"))
-            var count = 0
-            var list = mutableListOf<Pair<String, String?>>(Pair(archiveUrl, "${gallery.first}-${gallery.second}.zip"))
-            while (list.isNotEmpty()) {
-                if (count >= 3) {
-                    economic.depositGP(userId, cost)
-                    refunded = true
-                    bot.reply(
-                        sender,
-                        messageID,
-                        translator.translate("gallery.download_failed_refunded", cost)
-                    )
-                    return
-                }
-                count++
-                list = downloader.downloadFiles(list, ehArchiveFolder, 4)
-            }
-            Util.unzip(File(ehArchiveFolder, "${gallery.first}-${gallery.second}.zip"), cf)
-            ehPdfFolder.mkdirs()
-            val comparator = NaturalFileNameComparator()
-            val pages = cf.listFiles { file ->
-                ALLOW_SUFFIX.contains(
-                    Util.getFileExtensionFromUrl(
-                        file.toURI().toURL()
-                    )
-                ) && file.name.substringBeforeLast(".") != "cover" && file.isFile
-            }?.sortedWith(comparator).orEmpty()
-            check(pages.isNotEmpty()) { "No supported images were found in the downloaded archive." }
-            PDFGenerator.generatePDF(
-                pages,
-                pdfFile = p, tempDir = File(ehTempFolder, "pdf"),
-                password = "${gallery.first}-${gallery.second}",
-                signatureText = "Generated at:${
-                    Instant.now().atZone(ZoneOffset.UTC)
-                        .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ssZZZZZ"))
-                }"
-            )
-            pdfCache.put(cacheKey, true)
-            val sent = bot.sendFile(
-                sender.type,
-                sender.target,
-                "${gallery.first}-${gallery.second}.pdf",
-                File(ehPdfFolder, "${gallery.first}-${gallery.second}.pdf")
-            )
-            if (!sent) {
+    fun deliverEHentai(result: ComicTaskResult.EHentai, extra: QueueExtraData) {
+        val bot = extra.bot
+        val sender = extra.sender
+        val messageID = extra.messageID
+        sendComicInformation(result.info, result.cover, sender, messageID, bot, extra.blurImages)
+
+        val pdf = result.pdf
+        if (pdf == null) {
+            if (result.cost > 0) {
+                val userId = sender.user.userID.toULong()
                 bot.reply(
                     sender,
                     messageID,
-                    translator.translate("gallery.send_failed")
+                    translator.translate("gallery.insufficient_gp", result.cost, economic.getBalance(userId)),
                 )
+            } else {
+                bot.reply(sender, messageID, translator.translate("gallery.archive_unavailable"))
             }
+            return
+        }
+        if (result.cacheHit) {
+            bot.reply(sender, messageID, translator.translate("gallery.cache_hit"))
+        } else {
+            val userId = sender.user.userID.toULong()
+            if (!economic.withdrawGP(userId, result.cost)) {
+                bot.reply(
+                    sender,
+                    messageID,
+                    translator.translate("gallery.insufficient_gp", result.cost, economic.getBalance(userId))
+                )
+                return
+            }
+            bot.reply(
+                sender,
+                messageID,
+                translator.translate("gallery.preparing", result.cost, economic.getBalance(userId))
+            )
+        }
+
+        val sent = try {
+            bot.sendFile(
+                sender.type,
+                sender.target,
+                "${result.gallery.first}-${result.gallery.second}.pdf",
+                pdf,
+            )
         } catch (exception: Exception) {
-            if (!refunded) {
-                economic.depositGP(userId, cost)
+            if (!result.cacheHit) {
+                economic.depositGP(sender.user.userID.toULong(), result.cost)
             }
             throw exception
+        }
+        if (!sent) {
+            bot.reply(
+                sender,
+                messageID,
+                translator.translate(
+                    if (result.cacheHit) "gallery.cache_send_failed" else "gallery.send_failed"
+                )
+            )
         }
     }
 
@@ -282,22 +345,18 @@ fun main() = runBlocking {
         }
     }
 
-    fun jmQueueProcess(albumId: String, sender: MessageSender, messageID: Long, bot: AbstractBot) {
+    fun generateJMComic(albumId: String): ComicTaskResult.JMComic {
         val cacheKey = "jm:$albumId"
         val pdf = File(jmPdfFolder, "JM$albumId.pdf")
         val imageDirectory = File(jmImgFolder, "JM$albumId")
         imageDirectory.mkdirs()
         val info = jm.getTargetInformation(albumId)
         val cover = jm.downloadCover(albumId, File(imageDirectory, "cover.jpg"))
-        sendComicInformation(info, cover, sender, messageID, bot)
 
         if (pdfCache.getIfPresent(cacheKey) == true || pdf.isFile) {
-            bot.reply(sender, messageID, translator.translate("jm.cache_hit"))
-            sendJmPdf(pdf, sender, messageID, bot)
-            return
+            return ComicTaskResult.JMComic(albumId, info, cover, pdf, cacheHit = true)
         }
 
-        bot.reply(sender, messageID, translator.translate("jm.preparing", albumId, info.pages))
         val pages = jm.downloadAlbum(albumId, imageDirectory)
         jmPdfFolder.mkdirs()
         PDFGenerator.generatePDF(
@@ -311,7 +370,24 @@ fun main() = runBlocking {
             }"
         )
         pdfCache.put(cacheKey, true)
-        sendJmPdf(pdf, sender, messageID, bot)
+        return ComicTaskResult.JMComic(albumId, info, cover, pdf, cacheHit = false)
+    }
+
+    fun deliverJMComic(result: ComicTaskResult.JMComic, extra: QueueExtraData) {
+        val bot = extra.bot
+        val sender = extra.sender
+        val messageID = extra.messageID
+        sendComicInformation(result.info, result.cover, sender, messageID, bot, extra.blurImages)
+        if (result.cacheHit) {
+            bot.reply(sender, messageID, translator.translate("jm.cache_hit"))
+        } else {
+            bot.reply(
+                sender,
+                messageID,
+                translator.translate("jm.preparing", result.albumId, result.info.pages),
+            )
+        }
+        sendJmPdf(result.pdf, sender, messageID, bot)
     }
 
     logger.info("Initializing...")
@@ -369,29 +445,40 @@ fun main() = runBlocking {
 
     logger.info("Connecting...")
     val botConfig = config.getConfig().bot
-    val bot: AbstractBot = when (botConfig.adapter) {
-        ConfigData.Bot.Adapter.NAPCAT -> Napcat(
-            botConfig.napcat.websocketUrl,
-            botConfig.napcat.token,
-            botConfig.isCommandStartWithAt,
-            commandOperator = botConfig.commandOperator,
-            useStreamAPI = botConfig.napcat.fileUpload.useStreamAPI,
-            streamAPIChunkSize = botConfig.napcat.fileUpload.chunkSize,
-            streamAPIExpireSeconds = botConfig.napcat.fileUpload.expireSeconds,
-            translator = translator,
-        )
-        ConfigData.Bot.Adapter.TELEGRAM -> TelegramBot(
-            token = botConfig.telegram.token,
-            apiBaseUrl = botConfig.telegram.apiBaseUrl,
-            parentClient = client,
-            commandOperator = botConfig.commandOperator,
-            translator = translator,
-            inlineModeEnabled = botConfig.telegram.enableInlineMode,
-            autoConnect = false,
-        )
+    val bots = buildList {
+        if (botConfig.napcat.enabled) {
+            add(
+                Napcat(
+                    botConfig.napcat.websocketUrl,
+                    botConfig.napcat.token,
+                    botConfig.isCommandStartWithAt,
+                    commandOperator = botConfig.commandOperator,
+                    useStreamAPI = botConfig.napcat.fileUpload.useStreamAPI,
+                    streamAPIChunkSize = botConfig.napcat.fileUpload.chunkSize,
+                    streamAPIExpireSeconds = botConfig.napcat.fileUpload.expireSeconds,
+                    translator = translator,
+                    autoConnect = false,
+                ) to botConfig.napcat.blurImages
+            )
+        }
+        if (botConfig.telegram.enabled) {
+            add(
+                TelegramBot(
+                    token = botConfig.telegram.token,
+                    apiBaseUrl = botConfig.telegram.apiBaseUrl,
+                    parentClient = client,
+                    commandOperator = botConfig.commandOperator,
+                    translator = translator,
+                    inlineModeEnabled = botConfig.telegram.enableInlineMode,
+                    autoConnect = false,
+                ) to botConfig.telegram.blurImages
+            )
+        }
     }
+    check(bots.isNotEmpty()) { "At least one bot adapter must be enabled." }
 
-    bot.beforeCommandExecution(CommandExecutor { sender, command, _, messageID ->
+    fun configureBot(bot: AbstractBot, blurImages: Boolean) {
+        bot.beforeCommandExecution(CommandExecutor { sender, command, _, messageID ->
         if (command == "checkin") {
             return@CommandExecutor
         }
@@ -429,10 +516,10 @@ fun main() = runBlocking {
             return@CommandExecutor
         }
 
-        val result = queue.put(
-            sender.user.userID,
+        val result = queue.putOrJoin(
+            QueueUser(bot, sender.user.userID),
             ComicTask.EHentai(gallery),
-            QueueExtraData(messageID, sender)
+            QueueExtraData(messageID, sender, bot, blurImages)
         )
         val response = when (result) {
             ProcessingQueue.PutStatus.QUEUE_FULL ->
@@ -441,6 +528,8 @@ fun main() = runBlocking {
                 translator.translate("command.eh.user_queue_full")
             ProcessingQueue.PutStatus.DUPLICATE_TASK ->
                 translator.translate("command.eh.duplicate")
+            ProcessingQueue.PutStatus.JOINED_TASK ->
+                translator.translate("command.eh.joined")
             ProcessingQueue.PutStatus.SUCCESS ->
                 translator.translate("command.eh.accepted")
             ProcessingQueue.PutStatus.FAILURE ->
@@ -465,10 +554,10 @@ fun main() = runBlocking {
             bot.reply(sender, messageID, translator.translate("command.jm.invalid_target"))
             return@CommandExecutor
         }
-        val result = queue.put(
-            sender.user.userID,
+        val result = queue.putOrJoin(
+            QueueUser(bot, sender.user.userID),
             ComicTask.JMComic(albumId),
-            QueueExtraData(messageID, sender)
+            QueueExtraData(messageID, sender, bot, blurImages)
         )
         val response = when (result) {
             ProcessingQueue.PutStatus.QUEUE_FULL ->
@@ -477,6 +566,8 @@ fun main() = runBlocking {
                 translator.translate("command.jm.user_queue_full")
             ProcessingQueue.PutStatus.DUPLICATE_TASK ->
                 translator.translate("command.jm.duplicate")
+            ProcessingQueue.PutStatus.JOINED_TASK ->
+                translator.translate("command.jm.joined")
             ProcessingQueue.PutStatus.SUCCESS ->
                 translator.translate("command.jm.accepted")
             ProcessingQueue.PutStatus.FAILURE ->
@@ -540,15 +631,20 @@ fun main() = runBlocking {
         val nodes = searchPage.results.take(SEARCH_RESULT_LIMIT).mapIndexed { index, result ->
             ForwardMessageNode.CustomMessage(
                 nickname = if (source == "eh") "E-Hentai #${index + 1}" else "JMComic #${index + 1}",
-                content = MessageChain.text(
-                    formatSearchResult(
-                        source = source,
+                content = MessageChain().apply {
+                    if (bot is TelegramBot) add(Reply(messageID))
+                    add(
+                        PlainText(
+                            formatSearchResult(
+                                source = source,
                                 result = result,
                                 index = index + 1,
                                 commandOperator = config.getConfig().bot.commandOperator,
                                 translator = translator,
                             )
-                ),
+                        )
+                    )
+                },
             )
         }
         bot.sendForwardMessage(sender.type, sender.target, nodes)
@@ -657,38 +753,84 @@ fun main() = runBlocking {
             translator.translate("command.info.content", user.role.name, user.balance, lastCheckIn)
         )
     }
-
-    if (bot is TelegramBot) {
-        bot.connect()
     }
+
+    bots.forEach { (bot, blurImages) -> configureBot(bot, blurImages) }
+    val connectedBotCount = bots.count { (bot, _) ->
+        runCatching { bot.connect() }
+            .onFailure { exception ->
+                logger.error(
+                    "Failed to connect {}; other enabled bot adapters will keep running.",
+                    bot::class.simpleName,
+                    exception,
+                )
+            }
+            .getOrDefault(false)
+    }
+    check(connectedBotCount > 0) { "None of the enabled bot adapters could be connected." }
 
     for (i in 1..config.getConfig().comicParallelCount) {
         async(Dispatchers.IO) {
             while (true) {
-                val (_, task, extra) = queue.take()
-                try {
+                val (_, task) = queue.take()
+                val result = runCatching<ComicTaskResult> {
                     when (task) {
-                        is ComicTask.EHentai ->
-                            queueProcess(task.gallery, extra.sender, extra.messageID, bot)
-                        is ComicTask.JMComic ->
-                            jmQueueProcess(task.albumId, extra.sender, extra.messageID, bot)
+                        is ComicTask.EHentai -> generateEHentai(task.gallery)
+                        is ComicTask.JMComic -> generateJMComic(task.albumId)
                     }
-                } catch (e: Exception) {
-                    logger.error("An unexpected error occurred.", e)
-                    bot.reply(
-                        extra.sender,
-                        extra.messageID,
-                        translator.translate(
-                            if (task is ComicTask.EHentai) {
-                                "gallery.task_failed_refunded"
-                            } else {
-                                "jm.task_failed"
-                            }
-                        )
-                    )
-                } finally {
-                    queue.complete(extra.sender.user.userID, task)
                 }
+                val subscribers = queue.completeAndGetSubscribers(task).map { it.second }
+                result.fold(
+                    onSuccess = { taskResult ->
+                        subscribers.forEach { subscriber ->
+                            runCatching {
+                                when (taskResult) {
+                                    is ComicTaskResult.EHentai -> deliverEHentai(taskResult, subscriber)
+                                    is ComicTaskResult.JMComic -> deliverJMComic(taskResult, subscriber)
+                                }
+                            }.onFailure { exception ->
+                                logger.error(
+                                    "Failed to deliver {} to user {} through {}.",
+                                    task,
+                                    subscriber.sender.user.userID,
+                                    subscriber.bot::class.simpleName,
+                                    exception,
+                                )
+                                runCatching {
+                                    subscriber.bot.reply(
+                                        subscriber.sender,
+                                        subscriber.messageID,
+                                        translator.translate(
+                                            if (task is ComicTask.EHentai) {
+                                                "gallery.task_failed_refunded"
+                                            } else {
+                                                "jm.task_failed"
+                                            }
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    onFailure = { exception ->
+                        logger.error("Failed to process shared task {}.", task, exception)
+                        subscribers.forEach { subscriber ->
+                            runCatching {
+                                subscriber.bot.reply(
+                                    subscriber.sender,
+                                    subscriber.messageID,
+                                    translator.translate(
+                                        if (task is ComicTask.EHentai) {
+                                            "gallery.task_failed_refunded"
+                                        } else {
+                                            "jm.task_failed"
+                                        }
+                                    )
+                                )
+                            }
+                        }
+                    },
+                )
             }
         }
     }
@@ -702,17 +844,8 @@ internal fun formatSearchResult(
     translator: Translator,
 ): String = buildString {
     val target = if (source == "eh") result.url else "JM${result.id}"
-    val sourceLabel = if (source == "eh") "E-Hentai" else "JMComic · JM${result.id}"
-    appendLine(translator.translate("search.result.header", index, sourceLabel))
+    appendLine("#$index")
     appendLine(translator.translate("gallery.title", result.title))
-    result.subtitle?.takeIf(String::isNotBlank)?.let {
-        appendLine(
-            translator.translate(
-                if (source == "eh") "gallery.uploader" else "search.result.author",
-                it,
-            )
-        )
-    }
     result.category?.takeIf(String::isNotBlank)?.let {
         appendLine(translator.translate("gallery.type", it))
     }
@@ -745,7 +878,7 @@ internal fun formatSearchResult(
     append(
         translator.translate(
             "search.result.command",
-            "${commandOperator}get $source $target",
+            "`${commandOperator}get $source $target`",
         )
     )
 }

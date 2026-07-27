@@ -30,6 +30,7 @@ import me.heartalborada.commons.bots.events.request.GroupAddRequestEvent
 import me.heartalborada.commons.i18n.Translator
 import me.heartalborada.commons.utils.calculateSHA256
 import me.heartalborada.commons.utils.toBase64
+import me.heartalborada.i18n.PropertiesTranslator
 import okhttp3.*
 import okio.IOException
 import org.slf4j.Logger
@@ -39,8 +40,8 @@ import java.io.File
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.CoroutineContext
-import kotlin.system.exitProcess
 import kotlin.time.Duration.Companion.milliseconds
 
 class Napcat(
@@ -52,10 +53,11 @@ class Napcat(
     private val useStreamAPI: Boolean = false,
     private val streamAPIChunkSize: Int = 512 * 1024,
     private val streamAPIExpireSeconds: Long = 30 * 60 * 60 * 24,
-    translator: Translator = Translator(),
+    translator: Translator = PropertiesTranslator(),
+    autoConnect: Boolean = true,
 ) : AbstractBot(commandStartWithAt, commandOperator, commandDivider, translator) {
     private val logger: Logger = LoggerFactory.getLogger(this::class.java)
-    private var isConnected = false
+    private val connected = AtomicBoolean(false)
     private var eventWS: WebSocket? = null
     private var apiWS: WebSocket? = null
     private var httpClient = OkHttpClient.Builder().build()
@@ -71,29 +73,35 @@ class Napcat(
     private val pendingReqs = ConcurrentHashMap<String, CompletableDeferred<String>>()
 
     init {
-        connect()
+        if (autoConnect) connect()
     }
 
     override fun close(): Boolean {
+        connected.set(false)
         super.close()
         apiScope.cancel()
-        return eventWS?.close(1000, "Close") == true && apiWS?.close(1000, "Close") == true
+        val eventClosed = eventWS?.close(1000, "Close") ?: true
+        val apiClosed = apiWS?.close(1000, "Close") ?: true
+        return eventClosed && apiClosed
     }
 
     override fun connect(): Boolean {
-        if (isConnected) {
-            throw RuntimeException("Already connected")
+        check(connected.compareAndSet(false, true)) { "NapCat bot is already connected." }
+        return try {
+            super.connect()
+            eventWS = httpClient.newWebSocket(
+                Request.Builder().url("${wsURL}/event").addHeader("Authorization", token).build(),
+                EventListener()
+            )
+            apiWS = httpClient.newWebSocket(
+                Request.Builder().url("${wsURL}/api").addHeader("Authorization", token).build(),
+                ApiListener()
+            )
+            true
+        } catch (exception: Exception) {
+            connected.set(false)
+            throw exception
         }
-        eventWS = httpClient.newWebSocket(
-            Request.Builder().url("${wsURL}/event").addHeader("Authorization", token).build(),
-            EventListener()
-        )
-        apiWS = httpClient.newWebSocket(
-            Request.Builder().url("${wsURL}/api").addHeader("Authorization", token).build(),
-            ApiListener()
-        )
-        super.connect()
-        return true
     }
 
     override fun getEventBus(): EventBus {
@@ -472,13 +480,12 @@ class Napcat(
     private inner class EventListener : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             logger.info("Connected to $wsURL")
-            isConnected = true
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             logger.info("Disconnected from $wsURL")
             eventWS?.close(1000, "Close")
-            isConnected = false
+            connected.set(false)
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -694,8 +701,8 @@ class Napcat(
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             logger.error("An unexpected error occurred.", t)
-            logger.error("Exit.")
-            exitProcess(0)
+            connected.set(false)
+            logger.warn("NapCat event connection failed; other bot adapters will keep running.")
         }
     }
 

@@ -83,6 +83,7 @@ internal object ConfigMigration {
             when (version) {
                 1 -> migrateV1ToV2(root)
                 2 -> migrateV2ToV3(root)
+                3 -> migrateV3ToV4(root)
                 else -> error("No config migration is available for version $version.")
             }
             version++
@@ -116,6 +117,41 @@ internal object ConfigMigration {
             ?.takeIf { it.isJsonPrimitive }
             ?.asString
         root.addProperty("BlurImages", !adapter.equals("TELEGRAM", ignoreCase = true))
+    }
+
+    private fun migrateV3ToV4(root: JsonObject) {
+        val bot = root.get("Bot")
+            ?.takeIf { it.isJsonObject }
+            ?.asJsonObject
+            ?: JsonObject().also { root.add("Bot", it) }
+        val napcat = normalizeSection(bot, "napcat", "Napcat")
+        val telegram = normalizeSection(bot, "telegram", "Telegram")
+        val adapter = bot.remove("Adapter")
+            ?.takeIf { it.isJsonPrimitive }
+            ?.asString
+            .orEmpty()
+        val legacyBlur = root.remove("BlurImages")
+            ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }
+            ?.asBoolean
+
+        if (!napcat.has("Enabled")) {
+            napcat.addProperty("Enabled", !adapter.equals("TELEGRAM", ignoreCase = true))
+        }
+        if (!telegram.has("Enabled")) {
+            telegram.addProperty("Enabled", adapter.equals("TELEGRAM", ignoreCase = true))
+        }
+        if (!napcat.has("BlurImages")) {
+            napcat.addProperty(
+                "BlurImages",
+                legacyBlur?.takeIf { !adapter.equals("TELEGRAM", ignoreCase = true) } ?: true,
+            )
+        }
+        if (!telegram.has("BlurImages")) {
+            telegram.addProperty(
+                "BlurImages",
+                legacyBlur?.takeIf { adapter.equals("TELEGRAM", ignoreCase = true) } ?: false,
+            )
+        }
     }
 
     private fun normalizeSection(parent: JsonObject, canonicalName: String, legacyName: String): JsonObject {

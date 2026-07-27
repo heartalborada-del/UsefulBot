@@ -46,13 +46,14 @@ java -jar ./implements/build/libs/implements-1.0.0.jar
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "Bot": {
-    "Adapter": "NAPCAT",
     "CommandOperator": "/",
     "IsCommandStartWithAt": false,
     "Language": "zh-CN",
     "napcat": {
+      "Enabled": true,
+      "BlurImages": true,
       "WebsocketURL": "ws://127.0.0.1:3000",
       "Token": "napcat!",
       "FileUpload": {
@@ -62,12 +63,13 @@ java -jar ./implements/build/libs/implements-1.0.0.jar
       }
     },
     "telegram": {
+      "Enabled": true,
+      "BlurImages": false,
       "Token": "",
       "ApiBaseURL": "https://api.telegram.org",
       "EnableInlineMode": true
     }
   },
-  "BlurImages": false,
   "Proxy": {
     "Type": "DIRECT",
     "Address": "127.0.0.1",
@@ -104,19 +106,23 @@ java -jar ./implements/build/libs/implements-1.0.0.jar
 }
 ```
 
-`Adapter` 可设为 `NAPCAT` 或 `TELEGRAM`。Telegram 模式使用 `Bot.telegram.Token`，
-NapCat 模式使用 `Bot.napcat.Token`。`Language` 支持 `en`、`en-US`、
+分别通过 `Bot.napcat.Enabled` 和 `Bot.telegram.Enabled` 启用 NapCat 与 Telegram；
+二者都设为 `true` 时会同时连接，并共享同一个漫画任务队列。不同用户请求同一漫画时，
+后续请求会加入正在处理的共享任务，只下载并生成一次，完成后分别向所有请求者发送。
+Telegram 使用
+`Bot.telegram.Token`，NapCat 使用 `Bot.napcat.Token`。`Language` 支持 `en`、`en-US`、
 `zh`、`zh-CN`、`中文` 等写法；无法识别时回退到英文。代理 `Type` 可使用 Java
 `Proxy.Type` 支持的 `DIRECT`、`HTTP` 或 `SOCKS`。
 
-`BlurImages` 控制发送漫画信息时是否模糊封面；Telegram 通常设为 `false`，需要规避
-平台图片审核时可设为 `true`。
+`Bot.napcat.BlurImages` 和 `Bot.telegram.BlurImages` 分别控制两个平台发送漫画信息时
+是否模糊封面；Telegram 通常设为 `false`，需要规避平台图片审核时可设为 `true`。
 
 `version` 是配置格式版本。没有该字段的旧配置会按 v1 读取，并在启动时自动升级：
 原 `Bot.WebsocketURL`、`Bot.Token`、`Bot.FileUpload` 会迁移至
 `Bot.napcat`，原 `Bot.Telegram` 会迁移至 `Bot.telegram`。迁移时会递归补齐新版本中
-缺失的字段及其默认值，同时保留已有值和其他未知字段；升级至 v3 时，NapCat 保留图片
-模糊，Telegram 默认关闭图片模糊。高于当前支持版本的配置不会被自动降级或重写。
+缺失的字段及其默认值，同时保留已有值和其他未知字段；升级至 v4 时，旧 `Adapter`
+会迁移为对应适配器的 `Enabled`，旧全局 `BlurImages` 会迁移到原适配器配置中。
+高于当前支持版本的配置不会被自动降级或重写。
 
 ### Telegram
 
