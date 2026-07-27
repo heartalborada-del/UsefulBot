@@ -41,6 +41,11 @@ class ConfigDataTest {
         assertEquals("telegram-token", config.bot.telegram.token)
         assertEquals("https://api.telegram.org", config.bot.telegram.apiBaseUrl)
         assertEquals(false, config.bot.telegram.enableInlineMode)
+        assertEquals(LargeFilePolicy.SPLIT_PDF, config.bot.telegram.largeFile.policy)
+        assertEquals(48, config.bot.telegram.largeFile.maxPartSizeMiB)
+        assertEquals("data/telegram/temp", config.bot.telegram.largeFile.tempDirectory)
+        assertTrue(config.bot.telegram.telegraphPreview.enabled)
+        assertEquals("UsefulBot", config.bot.telegram.telegraphPreview.authorName)
         assertEquals(8, config.jmComic.imageParallelCount)
         assertEquals("https://jm365.work/3YeBdF", config.jmComic.redirectUrl)
         assertEquals("www.cdnhjk.net", config.jmComic.apiDomains.first())
@@ -179,6 +184,59 @@ class ConfigDataTest {
         assertFalse(config.bot.napcat.blurImages)
         assertTrue(config.bot.telegram.enabled)
         assertTrue(config.bot.telegram.blurImages)
+    }
+
+    @Test
+    fun `version four config gains Telegram Telegraph preview settings`() {
+        val configFile = Files.createTempFile("useful-bot-v4-config-", ".json").toFile()
+        try {
+            configFile.writeText(
+                """{"version":4,"Bot":{"telegram":{"Enabled":true,"Token":"token"}}}"""
+            )
+
+            val config = Config(configFile).getConfig()
+
+            assertEquals(ConfigData.CURRENT_VERSION, config.version)
+            assertTrue(config.bot.telegram.telegraphPreview.enabled)
+            assertEquals("", config.bot.telegram.telegraphPreview.accessToken)
+            val upgraded = JsonParser.parseString(configFile.readText()).asJsonObject
+            assertTrue(
+                upgraded.getAsJsonObject("Bot")
+                    .getAsJsonObject("telegram")
+                    .getAsJsonObject("TelegraphPreview")
+                    .get("Enabled")
+                    .asBoolean
+            )
+        } finally {
+            configFile.delete()
+        }
+    }
+
+    @Test
+    fun `version five config gains Telegram PDF splitting settings`() {
+        val configFile = Files.createTempFile("useful-bot-v5-config-", ".json").toFile()
+        try {
+            configFile.writeText(
+                """{"version":5,"Bot":{"telegram":{"Enabled":true,"Token":"token"}}}"""
+            )
+
+            val config = Config(configFile).getConfig()
+
+            assertEquals(ConfigData.CURRENT_VERSION, config.version)
+            assertEquals(LargeFilePolicy.SPLIT_PDF, config.bot.telegram.largeFile.policy)
+            assertEquals(48, config.bot.telegram.largeFile.maxPartSizeMiB)
+            val upgraded = JsonParser.parseString(configFile.readText()).asJsonObject
+            assertEquals(
+                "SPLIT_PDF",
+                upgraded.getAsJsonObject("Bot")
+                    .getAsJsonObject("telegram")
+                    .getAsJsonObject("LargeFile")
+                    .get("Policy")
+                    .asString,
+            )
+        } finally {
+            configFile.delete()
+        }
     }
 
     private fun assertAllDefaultFieldsPresent(actual: JsonObject, defaults: JsonObject, path: String = "") {

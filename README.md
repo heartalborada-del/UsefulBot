@@ -46,7 +46,7 @@ java -jar ./implements/build/libs/implements-1.0.0.jar
 
 ```json
 {
-  "version": 4,
+  "version": 6,
   "Bot": {
     "CommandOperator": "/",
     "IsCommandStartWithAt": false,
@@ -67,7 +67,18 @@ java -jar ./implements/build/libs/implements-1.0.0.jar
       "BlurImages": false,
       "Token": "",
       "ApiBaseURL": "https://api.telegram.org",
-      "EnableInlineMode": true
+      "EnableInlineMode": true,
+      "LargeFile": {
+        "Policy": "SPLIT_PDF",
+        "MaxPartSizeMiB": 48,
+        "TempDirectory": "data/telegram/temp"
+      },
+      "TelegraphPreview": {
+        "Enabled": true,
+        "AccessToken": "",
+        "AuthorName": "UsefulBot",
+        "AuthorURL": ""
+      }
     }
   },
   "Proxy": {
@@ -116,12 +127,21 @@ Telegram 使用
 
 `Bot.napcat.BlurImages` 和 `Bot.telegram.BlurImages` 分别控制两个平台发送漫画信息时
 是否模糊封面；Telegram 通常设为 `false`，需要规避平台图片审核时可设为 `true`。
+Telegram 使用官方 Bot API 且 PDF 超过上传限制时，默认按页拆成不超过
+`Bot.telegram.LargeFile.MaxPartSizeMiB` 的临时 PDF 分卷。程序同一时刻只保留一个临时
+分卷；首次上传后按 Bot ID、原 PDF SHA-256 和分卷序号持久化 `file_id`，其他请求方直接
+复用 Telegram 文件，不再拆分或上传。Telegram 拒绝旧 `file_id` 时只重新生成并上传对应
+分卷。`Policy` 可设为 `SPLIT_PDF`、`TELEGRAPH` 或 `FAIL`。使用 `TELEGRAPH` 时还需启用
+`TelegraphPreview.Enabled`；`AccessToken` 留空会在首次使用时自动创建 Telegraph 账户。
+Telegram 发送的普通 PDF 与 PDF 分卷均不设置打开密码；NapCat 始终发送原始完整 PDF。
 
 `version` 是配置格式版本。没有该字段的旧配置会按 v1 读取，并在启动时自动升级：
 原 `Bot.WebsocketURL`、`Bot.Token`、`Bot.FileUpload` 会迁移至
 `Bot.napcat`，原 `Bot.Telegram` 会迁移至 `Bot.telegram`。迁移时会递归补齐新版本中
 缺失的字段及其默认值，同时保留已有值和其他未知字段；升级至 v4 时，旧 `Adapter`
 会迁移为对应适配器的 `Enabled`，旧全局 `BlurImages` 会迁移到原适配器配置中。
+升级至 v5 时会补充 Telegram Telegraph 预览配置；升级至 v6 时会补充 Telegram 大文件
+分卷策略。
 高于当前支持版本的配置不会被自动降级或重写。
 
 ### Telegram

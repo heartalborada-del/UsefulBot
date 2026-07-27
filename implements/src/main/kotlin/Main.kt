@@ -6,7 +6,10 @@ import kotlinx.coroutines.runBlocking
 import me.heartalborada.QueueExtraData
 import me.heartalborada.QueueUser
 import me.heartalborada.bots.napcat.Napcat
+import me.heartalborada.bots.telegram.TelegramApiException
 import me.heartalborada.bots.telegram.TelegramBot
+import me.heartalborada.bots.telegram.TelegramFileIdCache
+import me.heartalborada.bots.telegram.TelegramLargeDocumentSender
 import me.heartalborada.comics.EHentai
 import me.heartalborada.comics.JMComic
 import me.heartalborada.commons.Util
@@ -18,6 +21,7 @@ import me.heartalborada.commons.bots.dto.MessageSender
 import me.heartalborada.commons.bots.events.message.InlineQueryEvent
 import me.heartalborada.commons.comic.model.ArchiveInformation
 import me.heartalborada.commons.comic.PDFGenerator
+import me.heartalborada.commons.comic.SizeBoundedPdfSplitter
 import me.heartalborada.commons.comic.model.ComicInformation
 import me.heartalborada.commons.comic.model.ComicSearchOptions
 import me.heartalborada.commons.comic.model.ComicSearchPage
@@ -32,7 +36,9 @@ import me.heartalborada.commands.parseSearchCommandArguments
 import me.heartalborada.commons.okhttp.CookieStorageProvider
 import me.heartalborada.commons.queue.ProcessingQueue
 import me.heartalborada.config.Config
+import me.heartalborada.config.LargeFilePolicy
 import me.heartalborada.i18n.PropertiesTranslator
+import me.heartalborada.telegraph.TelegraphPublisher
 import okhttp3.Cookie
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
@@ -46,6 +52,7 @@ import java.net.URL
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.ConcurrentHashMap
 import javax.imageio.ImageIO
 
 private val pdfCache = CacheBuilder.newBuilder()
@@ -70,6 +77,15 @@ private val ALLOW_SUFFIX = setOf("jpg", "jpeg", "gif", "png", "webp")
 
 private val config = Config(File(rootFolder, "config.json"))
 private val translator = PropertiesTranslator(config.getConfig().bot.language)
+private val telegraphPublisher by lazy {
+    val telegraph = config.getConfig().bot.telegram.telegraphPreview
+    TelegraphPublisher(
+        client = client,
+        configuredAccessToken = telegraph.accessToken,
+        authorName = telegraph.authorName,
+        authorUrl = telegraph.authorUrl,
+    )
+}
 
 private val economicDataSource = run {
     dataFolder.mkdirs()
@@ -95,6 +111,7 @@ private sealed interface ComicTaskResult {
         val info: ComicInformation<*>,
         val cover: File,
         val pdf: File?,
+        val pages: List<File>,
         val cacheHit: Boolean,
         val cost: Long,
     ) : ComicTaskResult
@@ -104,6 +121,7 @@ private sealed interface ComicTaskResult {
         val info: ComicInformation<*>,
         val cover: File,
         val pdf: File,
+        val pages: List<File>,
         val cacheHit: Boolean,
     ) : ComicTaskResult
 }
@@ -116,7 +134,19 @@ private fun AbstractBot.reply(sender: MessageSender, messageID: Long, text: Stri
     return sendMessage(sender.type, sender.target, MessageChain.replyTo(messageID, text))
 }
 
+private fun listComicPages(directory: File): List<File> {
+    val comparator = NaturalFileNameComparator()
+    return directory.listFiles { file ->
+        file.isFile &&
+            file.name.substringBeforeLast(".") != "cover" &&
+            ALLOW_SUFFIX.contains(Util.getFileExtensionFromUrl(file.toURI().toURL()))
+    }?.sortedWith(comparator).orEmpty()
+}
+
 fun main() = runBlocking {
+    val telegramFileIdCache = TelegramFileIdCache(economicDataSource)
+    val telegramLargeDocumentSenders = ConcurrentHashMap<TelegramBot, TelegramLargeDocumentSender>()
+
     fun sendComicInformation(
         info: ComicInformation<*>,
         coverFile: File,
@@ -151,6 +181,125 @@ fun main() = runBlocking {
         bot.sendMessage(sender.type, sender.target, message)
     }
 
+    fun sendFileWithTelegraphFallback(
+        bot: AbstractBot,
+        sender: MessageSender,
+        messageID: Long,
+        name: String,
+        pdf: File,
+        pdfPassword: String?,
+        title: String,
+        pages: List<File>,
+    ): Boolean {
+        if (bot !is TelegramBot) {
+            return bot.sendFile(sender.type, sender.target, name, pdf)
+        }
+        val telegramConfig = config.getConfig().bot.telegram
+        val telegraphConfig = telegramConfig.telegraphPreview
+        val largeFileConfig = telegramConfig.largeFile
+        require(largeFileConfig.maxPartSizeMiB in 1..49) {
+            "Telegram MaxPartSizeMiB must be between 1 and 49."
+        }
+
+        fun telegramTempDirectory(): File {
+            val configured = File(largeFileConfig.tempDirectory)
+            return if (configured.isAbsolute) configured else File(rootFolder, largeFileConfig.tempDirectory)
+        }
+
+        fun sendUnlockedPdf(): Boolean {
+            if (pdfPassword == null) {
+                return bot.sendFile(sender.type, sender.target, name, pdf)
+            }
+            val tempDirectory = telegramTempDirectory().apply { mkdirs() }
+            val temporaryFile = File.createTempFile(
+                "usefulbot-tg-part-unlocked-",
+                ".pdf",
+                tempDirectory,
+            )
+            return try {
+                SizeBoundedPdfSplitter().writeUnlockedCopy(
+                    source = pdf,
+                    password = pdfPassword,
+                    target = temporaryFile,
+                )
+                bot.sendFile(sender.type, sender.target, name, temporaryFile)
+            } finally {
+                temporaryFile.delete()
+            }
+        }
+
+        fun publishPreview(): Boolean {
+            check(telegraphConfig.enabled) {
+                "Telegram Telegraph preview fallback is disabled."
+            }
+            val url = telegraphPublisher.publish(
+                title = title,
+                cacheKey = pdf.canonicalPath,
+                pages = pages,
+            )
+            bot.reply(
+                sender,
+                messageID,
+                translator.translate("telegram.telegraph_preview", url),
+            )
+            return true
+        }
+
+        fun sendSplitPdf(): Boolean {
+            bot.reply(
+                sender,
+                messageID,
+                translator.translate(
+                    "telegram.pdf_split",
+                    largeFileConfig.maxPartSizeMiB,
+                ),
+            )
+            val tempDirectory = telegramTempDirectory()
+            val largeDocumentSender = telegramLargeDocumentSenders.computeIfAbsent(bot) {
+                TelegramLargeDocumentSender(
+                    client = bot,
+                    cache = telegramFileIdCache,
+                    splitter = SizeBoundedPdfSplitter(),
+                    tempDirectory = tempDirectory,
+                    maximumPartBytes = largeFileConfig.maxPartSizeMiB.toLong() * 1024 * 1024,
+                )
+            }
+            return largeDocumentSender.send(
+                type = sender.type,
+                target = sender.target,
+                displayName = name,
+                source = pdf,
+                password = pdfPassword,
+            )
+        }
+
+        if (bot.shouldUseTelegraphPreview(pdf)) {
+            return when (largeFileConfig.policy) {
+                LargeFilePolicy.SPLIT_PDF -> sendSplitPdf()
+                LargeFilePolicy.TELEGRAPH -> publishPreview()
+                LargeFilePolicy.FAIL -> sendUnlockedPdf()
+            }
+        }
+        return try {
+            sendUnlockedPdf()
+        } catch (exception: TelegramApiException) {
+            if (!exception.isRequestEntityTooLarge()) {
+                throw exception
+            }
+            logger.info(
+                "Telegram rejected {} ({} bytes); applying configured large-file policy {}.",
+                pdf.name,
+                pdf.length(),
+                largeFileConfig.policy,
+            )
+            when (largeFileConfig.policy) {
+                LargeFilePolicy.SPLIT_PDF -> sendSplitPdf()
+                LargeFilePolicy.TELEGRAPH -> publishPreview()
+                LargeFilePolicy.FAIL -> throw exception
+            }
+        }
+    }
+
     suspend fun generateEHentai(gallery: Pair<String, String>): ComicTaskResult.EHentai {
         val cacheKey = "eh:${gallery.first}:${gallery.second}"
         val p = File(ehPdfFolder, "${gallery.first}-${gallery.second}.pdf")
@@ -169,6 +318,7 @@ fun main() = runBlocking {
                 info = info,
                 cover = File(cf, cover),
                 pdf = p,
+                pages = listComicPages(cf),
                 cacheHit = true,
                 cost = 0,
             )
@@ -181,6 +331,7 @@ fun main() = runBlocking {
                 info = info,
                 cover = File(cf, cover),
                 pdf = null,
+                pages = emptyList(),
                 cacheHit = false,
                 cost = 0,
             )
@@ -198,6 +349,7 @@ fun main() = runBlocking {
                 info = info,
                 cover = File(cf, cover),
                 pdf = null,
+                pages = emptyList(),
                 cacheHit = false,
                 cost = cost,
             )
@@ -237,6 +389,7 @@ fun main() = runBlocking {
             info = info,
             cover = File(cf, cover),
             pdf = p,
+            pages = pages,
             cacheHit = false,
             cost = cost,
         )
@@ -282,11 +435,15 @@ fun main() = runBlocking {
         }
 
         val sent = try {
-            bot.sendFile(
-                sender.type,
-                sender.target,
-                "${result.gallery.first}-${result.gallery.second}.pdf",
-                pdf,
+            sendFileWithTelegraphFallback(
+                bot = bot,
+                sender = sender,
+                messageID = messageID,
+                name = "${result.gallery.first}-${result.gallery.second}.pdf",
+                pdf = pdf,
+                pdfPassword = "${result.gallery.first}-${result.gallery.second}",
+                title = result.info.title,
+                pages = result.pages,
             )
         } catch (exception: Exception) {
             if (!result.cacheHit) {
@@ -305,7 +462,15 @@ fun main() = runBlocking {
         }
     }
 
-    fun sendJmPdf(pdf: File, sender: MessageSender, messageID: Long, bot: AbstractBot) {
+    fun sendJmPdf(
+        pdf: File,
+        sender: MessageSender,
+        messageID: Long,
+        bot: AbstractBot,
+        pdfPassword: String,
+        previewTitle: String,
+        previewPages: List<File>,
+    ) {
         check(pdf.isFile) { "JMComic PDF does not exist: ${pdf.absolutePath}" }
         val cost = ComicPricing.jmPdfCost(pdf.length())
         val userId = sender.user.userID.toULong()
@@ -329,7 +494,18 @@ fun main() = runBlocking {
                     translator.translate("jm.free")
                 }
             )
-            if (!bot.sendFile(sender.type, sender.target, pdf.name, pdf)) {
+            if (
+                !sendFileWithTelegraphFallback(
+                    bot = bot,
+                    sender = sender,
+                    messageID = messageID,
+                    name = pdf.name,
+                    pdf = pdf,
+                    pdfPassword = pdfPassword,
+                    title = previewTitle,
+                    pages = previewPages,
+                )
+            ) {
                 if (charged) {
                     economic.depositGP(userId, cost)
                     bot.reply(sender, messageID, translator.translate("jm.send_failed_refunded", cost))
@@ -354,7 +530,14 @@ fun main() = runBlocking {
         val cover = jm.downloadCover(albumId, File(imageDirectory, "cover.jpg"))
 
         if (pdfCache.getIfPresent(cacheKey) == true || pdf.isFile) {
-            return ComicTaskResult.JMComic(albumId, info, cover, pdf, cacheHit = true)
+            return ComicTaskResult.JMComic(
+                albumId = albumId,
+                info = info,
+                cover = cover,
+                pdf = pdf,
+                pages = listComicPages(imageDirectory),
+                cacheHit = true,
+            )
         }
 
         val pages = jm.downloadAlbum(albumId, imageDirectory)
@@ -370,7 +553,14 @@ fun main() = runBlocking {
             }"
         )
         pdfCache.put(cacheKey, true)
-        return ComicTaskResult.JMComic(albumId, info, cover, pdf, cacheHit = false)
+        return ComicTaskResult.JMComic(
+            albumId = albumId,
+            info = info,
+            cover = cover,
+            pdf = pdf,
+            pages = pages,
+            cacheHit = false,
+        )
     }
 
     fun deliverJMComic(result: ComicTaskResult.JMComic, extra: QueueExtraData) {
@@ -387,7 +577,15 @@ fun main() = runBlocking {
                 translator.translate("jm.preparing", result.albumId, result.info.pages),
             )
         }
-        sendJmPdf(result.pdf, sender, messageID, bot)
+        sendJmPdf(
+            pdf = result.pdf,
+            sender = sender,
+            messageID = messageID,
+            bot = bot,
+            pdfPassword = "JM${result.albumId}",
+            previewTitle = result.info.title,
+            previewPages = result.pages,
+        )
     }
 
     logger.info("Initializing...")

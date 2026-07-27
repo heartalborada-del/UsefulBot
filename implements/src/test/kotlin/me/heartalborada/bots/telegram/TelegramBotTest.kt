@@ -17,6 +17,7 @@ import okhttp3.Protocol
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
+import java.nio.file.Files
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
@@ -167,5 +168,109 @@ class TelegramBotTest {
         assertFailsWith<IllegalArgumentException> {
             TelegramBot(token = "", autoConnect = false)
         }
+    }
+
+    @Test
+    fun `reports request entity too large as a typed Telegram error`() {
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(413)
+                    .message("Payload Too Large")
+                    .body(
+                        """{"ok":false,"description":"Request Entity Too Large"}"""
+                            .toResponseBody("application/json".toMediaType())
+                    )
+                    .build()
+            }
+            .build()
+        val file = Files.createTempFile("telegram-large-document-", ".pdf").toFile()
+        file.writeText("test")
+        val bot = TelegramBot(
+            token = "test-token",
+            apiBaseUrl = "https://telegram.test",
+            parentClient = client,
+            autoConnect = false,
+        )
+        try {
+            val exception = assertFailsWith<TelegramApiException> {
+                bot.sendFile(ChatType.PRIVATE, 123L, "test.pdf", file)
+            }
+
+            assertEquals("sendDocument", exception.method)
+            assertEquals(413, exception.statusCode)
+            assertTrue(exception.isRequestEntityTooLarge())
+        } finally {
+            bot.close()
+            file.delete()
+        }
+    }
+
+    @Test
+    fun `returns reusable file ids from uploaded and resent documents`() {
+        val requestBodies = mutableListOf<String>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                requestBodies += Buffer().also { buffer ->
+                    chain.request().body?.writeTo(buffer)
+                }.readUtf8()
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(
+                        """
+                            {
+                              "ok":true,
+                              "result":{
+                                "message_id":${requestBodies.size},
+                                "chat":{"id":123},
+                                "document":{
+                                  "file_id":"reusable-file-id",
+                                  "file_unique_id":"stable-unique-id"
+                                }
+                              }
+                            }
+                        """.trimIndent().toResponseBody("application/json".toMediaType())
+                    )
+                    .build()
+            }
+            .build()
+        val file = Files.createTempFile("telegram-document-receipt-", ".pdf").toFile()
+        file.writeText("test")
+        val bot = TelegramBot(
+            token = "test-token",
+            apiBaseUrl = "https://telegram.test",
+            parentClient = client,
+            autoConnect = false,
+        )
+        try {
+            val uploaded = bot.uploadDocument(ChatType.PRIVATE, 123L, "test.pdf", file)
+            val resent = bot.resendDocument(ChatType.PRIVATE, 456L, uploaded.fileId)
+
+            assertEquals("reusable-file-id", uploaded.fileId)
+            assertEquals("stable-unique-id", uploaded.fileUniqueId)
+            assertEquals(uploaded.fileId, resent.fileId)
+            val resendBody = JsonParser.parseString(requestBodies.last()).asJsonObject
+            assertEquals(456L, resendBody["chat_id"].asLong)
+            assertEquals("reusable-file-id", resendBody["document"].asString)
+        } finally {
+            bot.close()
+            file.delete()
+        }
+    }
+
+    @Test
+    fun `recognizes Telegram rejected file identifiers`() {
+        val exception = TelegramApiException(
+            method = "sendDocument",
+            statusCode = 400,
+            description = "Bad Request: wrong remote file identifier specified",
+        )
+
+        assertTrue(exception.isInvalidFileIdentifier())
     }
 }

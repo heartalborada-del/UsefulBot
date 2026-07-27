@@ -61,7 +61,7 @@ class TelegramBot(
     commandStartWithAt = false,
     commandOperator = commandOperator,
     translator = translator,
-) {
+), TelegramDocumentClient {
     private val logger = LoggerFactory.getLogger(this::class.java)
     private val gson = Gson()
     private val eventBus = EventBus()
@@ -69,8 +69,10 @@ class TelegramBot(
     private val pollingScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("TelegramPolling"))
     private val client = parentClient.newBuilder()
         .readTimeout(POLL_TIMEOUT_SECONDS + 10L, TimeUnit.SECONDS)
+        .writeTimeout(UPLOAD_WRITE_TIMEOUT_MINUTES, TimeUnit.MINUTES)
         .build()
     private val apiRoot: String
+    private val usesOfficialBotApi: Boolean
     private val commandOperator = commandOperator
     private val messageChats = ConcurrentHashMap<Long, Long>()
     private val chatSendLocks = Array(CHAT_SEND_LOCK_COUNT) { Any() }
@@ -83,7 +85,9 @@ class TelegramBot(
 
     init {
         require(token.isNotBlank()) { "Telegram bot token must not be blank." }
-        apiRoot = "${apiBaseUrl.trimEnd('/')}/bot$token/"
+        val normalizedApiBaseUrl = apiBaseUrl.trimEnd('/')
+        apiRoot = "$normalizedApiBaseUrl/bot$token/"
+        usesOfficialBotApi = normalizedApiBaseUrl == DEFAULT_API_BASE_URL
         if (autoConnect) connect()
     }
 
@@ -221,18 +225,51 @@ class TelegramBot(
     }
 
     override fun sendFile(type: ChatType, target: Long, name: String, file: File): Boolean {
-        require(type == ChatType.PRIVATE || type == ChatType.GROUP) { "Unsupported Telegram chat type: $type" }
-        require(file.isFile) { "Telegram upload file does not exist: ${file.absolutePath}" }
-        val result = upload(
-            method = "sendDocument",
-            chatID = target,
-            fieldName = "document",
-            fileName = name,
-            body = file.asRequestBody("application/octet-stream".toMediaType()),
-        )
-        rememberMessage(result.asJsonObject)
+        uploadDocument(type, target, name, file)
         return true
     }
+
+    override val telegramBotId: Long
+        get() = botID
+
+    override fun uploadDocument(
+        type: ChatType,
+        target: Long,
+        name: String,
+        file: File,
+    ): TelegramDocumentReceipt {
+        require(type == ChatType.PRIVATE || type == ChatType.GROUP) { "Unsupported Telegram chat type: $type" }
+        require(file.isFile) { "Telegram upload file does not exist: ${file.absolutePath}" }
+        return synchronized(chatSendLock(target)) {
+            val result = upload(
+                method = "sendDocument",
+                chatID = target,
+                fieldName = "document",
+                fileName = name,
+                body = file.asRequestBody("application/octet-stream".toMediaType()),
+            )
+            documentReceipt(result.asJsonObject)
+        }
+    }
+
+    override fun resendDocument(
+        type: ChatType,
+        target: Long,
+        fileId: String,
+    ): TelegramDocumentReceipt {
+        require(type == ChatType.PRIVATE || type == ChatType.GROUP) { "Unsupported Telegram chat type: $type" }
+        require(fileId.isNotBlank()) { "Telegram file ID must not be blank." }
+        return synchronized(chatSendLock(target)) {
+            val result = call("sendDocument", JsonObject().apply {
+                addProperty("chat_id", target)
+                addProperty("document", fileId)
+            }).asJsonObject
+            documentReceipt(result)
+        }
+    }
+
+    internal fun shouldUseTelegraphPreview(file: File): Boolean =
+        usesOfficialBotApi && file.length() > OFFICIAL_MAX_UPLOAD_BYTES
 
     internal fun handleUpdate(update: JsonObject) {
         update.getAsJsonObject("message")?.let(::handleMessage)
@@ -474,10 +511,14 @@ class TelegramBot(
         client.newCall(request).execute().use { response ->
             val responseBody = response.body?.string()
                 ?: throw IllegalStateException("Telegram returned an empty response for $method.")
-            val root = JsonParser.parseString(responseBody).asJsonObject
-            if (!response.isSuccessful || root.get("ok")?.asBoolean != true) {
-                val description = root.get("description")?.asString ?: "HTTP ${response.code}"
-                throw IllegalStateException("Telegram API $method failed: $description")
+            val root = runCatching {
+                JsonParser.parseString(responseBody).asJsonObject
+            }.getOrNull()
+            if (!response.isSuccessful || root?.get("ok")?.asBoolean != true) {
+                val description = root?.get("description")?.asString
+                    ?: responseBody.take(512).takeIf(String::isNotBlank)
+                    ?: "HTTP ${response.code}"
+                throw TelegramApiException(method, response.code, description)
             }
             return root.get("result")
         }
@@ -497,6 +538,18 @@ class TelegramBot(
         val chatID = message.getAsJsonObject("chat")["id"].asLong
         messageChats[messageID] = chatID
         return messageID
+    }
+
+    private fun documentReceipt(message: JsonObject): TelegramDocumentReceipt {
+        val messageID = rememberMessage(message)
+        val document = message.getAsJsonObject("document")
+            ?: throw IllegalStateException("Telegram sendDocument response did not contain a document.")
+        return TelegramDocumentReceipt(
+            messageId = messageID,
+            fileId = document["file_id"]?.asString
+                ?: throw IllegalStateException("Telegram document response did not contain a file_id."),
+            fileUniqueId = document["file_unique_id"]?.asString,
+        )
     }
 
     private fun chatSendLock(chatID: Long): Any =
@@ -523,7 +576,57 @@ class TelegramBot(
         const val MAX_INLINE_TITLE_LENGTH = 256
         const val MAX_INLINE_DESCRIPTION_LENGTH = 512
         const val CHAT_SEND_LOCK_COUNT = 64
+        const val OFFICIAL_MAX_UPLOAD_BYTES = 50L * 1024 * 1024
+        const val UPLOAD_WRITE_TIMEOUT_MINUTES = 10L
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+    }
+}
+
+interface TelegramDocumentClient {
+    val telegramBotId: Long
+
+    fun uploadDocument(
+        type: ChatType,
+        target: Long,
+        name: String,
+        file: File,
+    ): TelegramDocumentReceipt
+
+    fun resendDocument(
+        type: ChatType,
+        target: Long,
+        fileId: String,
+    ): TelegramDocumentReceipt
+}
+
+data class TelegramDocumentReceipt(
+    val messageId: Long,
+    val fileId: String,
+    val fileUniqueId: String?,
+)
+
+internal class TelegramApiException(
+    val method: String,
+    val statusCode: Int,
+    val description: String,
+) : IllegalStateException("Telegram API $method failed: $description") {
+    fun isRequestEntityTooLarge(): Boolean =
+        statusCode == 413 ||
+            description.contains("Request Entity Too Large", ignoreCase = true) ||
+            description.contains("file is too big", ignoreCase = true)
+
+    fun isInvalidFileIdentifier(): Boolean =
+        statusCode == 400 && INVALID_FILE_IDENTIFIER_MESSAGES.any {
+            description.contains(it, ignoreCase = true)
+        }
+
+    private companion object {
+        val INVALID_FILE_IDENTIFIER_MESSAGES = listOf(
+            "wrong file identifier",
+            "wrong remote file identifier",
+            "file identifier is invalid",
+            "file_reference_expired",
+        )
     }
 }
 

@@ -37,7 +37,22 @@ data class ConfigData @JvmOverloads constructor(
             @SerializedName("Token") val token: String = "",
             @SerializedName("ApiBaseURL") val apiBaseUrl: String = "https://api.telegram.org",
             @SerializedName("EnableInlineMode") val enableInlineMode: Boolean = true,
-        )
+            @SerializedName("LargeFile") val largeFile: LargeFile = LargeFile(),
+            @SerializedName("TelegraphPreview") val telegraphPreview: TelegraphPreview = TelegraphPreview(),
+        ) {
+            data class LargeFile @JvmOverloads constructor(
+                @SerializedName("Policy") val policy: LargeFilePolicy = LargeFilePolicy.SPLIT_PDF,
+                @SerializedName("MaxPartSizeMiB") val maxPartSizeMiB: Int = 48,
+                @SerializedName("TempDirectory") val tempDirectory: String = "data/telegram/temp",
+            )
+
+            data class TelegraphPreview @JvmOverloads constructor(
+                @SerializedName("Enabled") val enabled: Boolean = true,
+                @SerializedName("AccessToken") val accessToken: String = "",
+                @SerializedName("AuthorName") val authorName: String = "UsefulBot",
+                @SerializedName("AuthorURL") val authorUrl: String = "",
+            )
+        }
     }
 
     data class Proxy @JvmOverloads constructor(
@@ -76,6 +91,12 @@ data class ConfigData @JvmOverloads constructor(
     )
 
     companion object {
-        const val CURRENT_VERSION = 4
+        const val CURRENT_VERSION = 6
     }
+}
+
+enum class LargeFilePolicy {
+    SPLIT_PDF,
+    TELEGRAPH,
+    FAIL,
 }
