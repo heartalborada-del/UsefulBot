@@ -434,14 +434,28 @@ fun main() = runBlocking {
         }
 
         val archiveUrl = eh.getArchiveDownloadUrl(gallery, archive)
-        var count = 0
-        var list = mutableListOf<Pair<String, String?>>(Pair(archiveUrl, "$taskName.zip"))
-        while (list.isNotEmpty()) {
-            check(count < 3) { "Failed to download the E-Hentai archive after 3 attempts." }
-            count++
-            list = downloader.downloadFiles(list, ehArchiveFolder, 4)
+        val archiveFileName = "$taskName.zip"
+        val archiveFile = File(ehArchiveFolder, archiveFileName)
+        var archiveReady = false
+        for (attempt in 1..3) {
+            val failed = downloader.downloadFiles(
+                mutableListOf(Pair(archiveUrl, archiveFileName)),
+                ehArchiveFolder,
+                4,
+            )
+            if (failed.isEmpty() && Util.isValidZip(archiveFile)) {
+                archiveReady = true
+                break
+            } else {
+                logger.warn(
+                    "E-Hentai archive download attempt {} was incomplete or corrupt; retrying.",
+                    attempt,
+                )
+                downloader.discardDownload(ehArchiveFolder, archiveFileName)
+            }
         }
-        Util.unzip(File(ehArchiveFolder, "$taskName.zip"), cf)
+        check(archiveReady) { "Failed to download a valid E-Hentai archive after 3 attempts." }
+        Util.unzip(archiveFile, cf)
         ehPdfFolder.mkdirs()
         val comparator = NaturalFileNameComparator()
         val pages = cf.listFiles { file ->

@@ -62,6 +62,17 @@ class DownloadManager(
         return failedDownloads
     }
 
+    fun discardDownload(destDir: File, fileName: String) {
+        val destination = File(destDir, fileName)
+        val progress = File(File(cacheFolder, "downloader"), "$fileName.progress")
+        if (destination.exists() && !destination.delete()) {
+            logger.warn("Failed to delete incomplete download: {}", destination.absolutePath)
+        }
+        if (progress.exists() && !progress.delete()) {
+            logger.warn("Failed to delete incomplete download progress: {}", progress.absolutePath)
+        }
+    }
+
     override fun close() {
         downloadDispatcher.close()
         if (okHttpClientDelegate.isInitialized()) {

@@ -131,6 +131,29 @@ class Util {
             }
         }
 
+        fun isValidZip(zipFile: File): Boolean =
+            try {
+                ZipInputStream(zipFile.inputStream()).use { archive ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    var entry = archive.nextEntry
+                    var entryCount = 0
+                    while (entry != null) {
+                        entryCount++
+                        if (!entry.isDirectory) {
+                            while (archive.read(buffer) != -1) {
+                                // Reading every entry verifies its compressed data and CRC.
+                            }
+                        }
+                        archive.closeEntry()
+                        entry = archive.nextEntry
+                    }
+                    check(entryCount > 0) { "ZIP archive contains no entries." }
+                }
+                true
+            } catch (_: Exception) {
+                false
+            }
+
         fun convertToBytes(size: String): Long {
             val regex = Regex("(\\d+(\\.\\d+)?)([a-zA-Z]+)")
             val matchResult = regex.matchEntire(size)
