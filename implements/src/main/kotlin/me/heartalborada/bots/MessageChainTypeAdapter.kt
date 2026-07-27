@@ -166,11 +166,12 @@ class MessageChainTypeAdapter : TypeAdapter<MessageChain>() {
                 }
 
                 "image" -> {
+                    val file = data!!.getAsJsonPrimitive("file").asString
                     val info = FileInfo(
-                        data!!.getAsJsonPrimitive("file").asString,
-                        data.getAsJsonPrimitive("file_size").asString.toLongOrDefault(-1),
-                        data.getAsJsonPrimitive("file").asString,
-                        data.getAsJsonPrimitive("url").asString
+                        file,
+                        data.stringOrNull("file_size")?.toLongOrNull() ?: -1,
+                        file,
+                        data.stringOrNull("url")
                     )
                     chain.add(Image(info))
                 }
@@ -178,8 +179,8 @@ class MessageChainTypeAdapter : TypeAdapter<MessageChain>() {
                 "file" -> {
                     val info = FileInfo(
                         data!!.getAsJsonPrimitive("file").asString,
-                        data.getAsJsonPrimitive("file_size").asString.toLongOrDefault(-1),
-                        data.getAsJsonPrimitive("file_id").asString
+                        data.stringOrNull("file_size")?.toLongOrNull() ?: -1,
+                        data.stringOrNull("file_id")
                     )
                     chain.add(File(info))
                 }
@@ -200,8 +201,8 @@ class MessageChainTypeAdapter : TypeAdapter<MessageChain>() {
                     Share(
                         data!!.getAsJsonPrimitive("title").asString,
                         data.getAsJsonPrimitive("url").asString,
-                        data.getAsJsonPrimitive("content").asString,
-                        data.getAsJsonPrimitive("image").asString
+                        data.stringOrNull("content"),
+                        data.stringOrNull("image")
                     )
                 )
 
@@ -215,8 +216,8 @@ class MessageChainTypeAdapter : TypeAdapter<MessageChain>() {
                     Location(
                         data!!.getAsJsonPrimitive("lat").asString,
                         data.getAsJsonPrimitive("lon").asString,
-                        data.getAsJsonPrimitive("title").asString,
-                        data.getAsJsonPrimitive("content").asString,
+                        data.stringOrNull("title"),
+                        data.stringOrNull("content"),
                     )
                 )
 
@@ -229,4 +230,9 @@ class MessageChainTypeAdapter : TypeAdapter<MessageChain>() {
         reader.endArray()
         return chain
     }
+}
+
+private fun JsonObject.stringOrNull(name: String): String? {
+    val value = get(name) ?: return null
+    return if (value.isJsonPrimitive) value.asString else null
 }

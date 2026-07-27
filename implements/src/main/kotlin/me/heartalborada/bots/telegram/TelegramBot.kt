@@ -116,6 +116,7 @@ class TelegramBot(
     override fun getEventBus(): EventBus = eventBus
 
     override fun sendMessage(type: ChatType, id: Long, message: MessageChain): Long {
+        logger.info("[Send] {} -> [{}] [{}] {}", botID, type.name, id, message.toString())
         require(type == ChatType.PRIVATE || type == ChatType.GROUP) { "Unsupported Telegram chat type: $type" }
         val replyTo = message.filterIsInstance<Reply>().firstOrNull()?.id
         val text = renderTelegramText(message)
@@ -138,6 +139,7 @@ class TelegramBot(
     ): ForwardMessageResult {
         require(type == ChatType.PRIVATE || type == ChatType.GROUP) { "Unsupported Telegram chat type: $type" }
         require(messages.isNotEmpty()) { "Forward messages must not be empty." }
+        logger.info("[SendForward] {} -> [{}] [{}] {} nodes", botID, type.name, target, messages.size)
         return synchronized(chatSendLock(target)) {
             val sentMessageIDs = mutableListOf<Long>()
             messages.forEach { node ->
