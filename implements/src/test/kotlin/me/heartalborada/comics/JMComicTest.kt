@@ -1,6 +1,8 @@
 package me.heartalborada.comics
 
 import com.google.gson.JsonParser
+import me.heartalborada.commons.comic.model.ComicCategory
+import me.heartalborada.commons.comic.model.ComicSearchOptions
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.awt.Color
 import java.awt.image.BufferedImage
@@ -214,6 +216,16 @@ class JMComicTest {
             repeat(original.width) { x ->
                 assertEquals(original.getRGB(x, y), decoded.getRGB(x, y))
             }
+        }
+    }
+
+    @Test
+    fun `rejects E-Hentai-only search filters`() {
+        assertFailsWith<IllegalArgumentException> {
+            provider.search(
+                keyword = "test",
+                options = ComicSearchOptions(categories = setOf(ComicCategory.MANGA)),
+            )
         }
     }
 }

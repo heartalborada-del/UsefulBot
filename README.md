@@ -102,10 +102,16 @@ java -jar ./implements/build/libs/implements-1.0.0.jar
 /get jm JM123456
 /get jm https://18comic.vip/album/123456/
 /search eh language:chinese artist:example
+/search eh --category=doujinshi,manga --min-stars=4 language:chinese
 /search jm --page=2 中文 全彩
 /checkin
 /info
 ```
+
+E-Hentai 搜索支持 `--category=分类,...` 和 `--min-stars=0..5`。分类可使用
+`misc`、`doujinshi`、`manga`、`artist-cg`、`game-cg`、`image-set`、
+`cosplay`、`asian-porn`、`non-h`、`western`；`language:chinese`、
+`artist:name` 等官方标签语法仍作为普通搜索关键词直接传递。
 
 E-Hentai PDF 密码为 `<gallery-id>-<token>`，JMComic PDF 密码为 `JM<车号>`。
 

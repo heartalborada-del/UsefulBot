@@ -7,6 +7,7 @@ import com.google.gson.reflect.TypeToken
 import me.heartalborada.commons.comic.AbstractComicProvider
 import me.heartalborada.commons.comic.model.ArchiveInformation
 import me.heartalborada.commons.comic.model.ComicInformation
+import me.heartalborada.commons.comic.model.ComicSearchOptions
 import me.heartalborada.commons.comic.model.ComicSearchPage
 import me.heartalborada.commons.comic.model.ComicSearchResult
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -108,9 +109,14 @@ class JMComic(
         return match.groupValues.drop(1).first(String::isNotEmpty)
     }
 
-    override fun search(keyword: String, page: Int): ComicSearchPage<String> {
+    override fun search(
+        keyword: String,
+        page: Int,
+        options: ComicSearchOptions,
+    ): ComicSearchPage<String> {
         require(keyword.isNotBlank()) { "Search keyword must not be blank." }
         require(page > 0) { "Search page must be greater than zero." }
+        require(options == ComicSearchOptions()) { "JMComic does not support category or star filters." }
         val path = buildSearchPath(keyword.trim(), page)
         return runCatching {
             val data = requestApi(path)

@@ -165,7 +165,13 @@ class Napcat(
                 mutex.withLock {
                     val uuid = UUID.randomUUID().toString()
                     try {
-                        val data = buildForwardMessageParams(type, target, messages, gson)
+                        val data = buildForwardMessageParams(
+                            type = type,
+                            target = target,
+                            messages = messages,
+                            gson = gson,
+                            defaultUserID = botID.takeIf { it > 0 } ?: INVALID_FORWARD_USER_ID,
+                        )
                         val responseDeferred = CompletableDeferred<String>()
                         pendingReqs[uuid] = responseDeferred
                         val sent = apiWS?.send(gson.toJson(ApiCommon("send_forward_msg", uuid, data))) == true
@@ -723,6 +729,7 @@ internal fun buildForwardMessageParams(
     target: Long,
     messages: List<ForwardMessageNode>,
     gson: Gson,
+    defaultUserID: Long = INVALID_FORWARD_USER_ID,
 ): Map<String, Any> {
     require(messages.isNotEmpty()) { "Forward messages must not be empty." }
     val params = mutableMapOf<String, Any>(
@@ -736,7 +743,7 @@ internal fun buildForwardMessageParams(
                 add(
                     JsonObject().apply {
                         addProperty("type", "node")
-                        add("data", node.toJson(gson))
+                        add("data", node.toJson(gson, defaultUserID))
                     }
                 )
             }
@@ -749,16 +756,18 @@ internal fun buildForwardMessageParams(
     return params
 }
 
-private fun ForwardMessageNode.toJson(gson: Gson): JsonObject = JsonObject().apply {
+private fun ForwardMessageNode.toJson(gson: Gson, defaultUserID: Long): JsonObject = JsonObject().apply {
     when (this@toJson) {
         is ForwardMessageNode.ExistingMessage -> {
             addProperty("id", messageID)
         }
 
         is ForwardMessageNode.CustomMessage -> {
-            addProperty("user_id", userID)
+            addProperty("user_id", userID ?: defaultUserID)
             addProperty("nickname", nickname)
             add("content", gson.toJsonTree(content, MessageChain::class.java))
         }
     }
 }
+
+private const val INVALID_FORWARD_USER_ID = 0L

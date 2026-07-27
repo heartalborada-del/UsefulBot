@@ -14,6 +14,7 @@ import me.heartalborada.commons.bots.dto.MessageSender
 import me.heartalborada.commons.comic.model.ArchiveInformation
 import me.heartalborada.commons.comic.PDFGenerator
 import me.heartalborada.commons.comic.model.ComicInformation
+import me.heartalborada.commons.comic.model.ComicSearchOptions
 import me.heartalborada.commons.comic.model.ComicSearchPage
 import me.heartalborada.commons.comic.model.ComicSearchResult
 import me.heartalborada.commons.commands.CommandExecutor
@@ -21,6 +22,7 @@ import me.heartalborada.commons.comparator.NaturalFileNameComparator
 import me.heartalborada.commons.downloader.DownloadManager
 import me.heartalborada.commons.economic.ComicPricing
 import me.heartalborada.commons.economic.EconomicManager
+import me.heartalborada.commands.parseSearchCommandArguments
 import me.heartalborada.commons.i18n.Translator
 import me.heartalborada.commons.okhttp.CookieStorageProvider
 import me.heartalborada.commons.queue.ProcessingQueue
@@ -471,20 +473,14 @@ fun main() = runBlocking {
 
     fun searchExecutor(
         source: String,
-        search: (String, Int) -> ComicSearchPage<*>,
+        search: (String, Int, ComicSearchOptions) -> ComicSearchPage<*>,
     ): CommandExecutor = CommandExecutor { sender, _, args, messageID ->
-        val rawArguments = args.toString().trim().split(Regex("\\s+"))
-            .filter(String::isNotBlank)
-        val pageArgument = rawArguments.firstOrNull {
-            it.startsWith("--page=", ignoreCase = true)
-        }
-        val page = if (pageArgument == null) {
-            1
-        } else {
-            pageArgument.substringAfter('=').toIntOrNull() ?: -1
-        }
-        val keyword = rawArguments.filterNot { it == pageArgument }.joinToString(" ").trim()
-        if (keyword.isEmpty() || page <= 0) {
+        val arguments = try {
+            parseSearchCommandArguments(
+                input = args.toString(),
+                allowGalleryFilters = source == "eh",
+            )
+        } catch (_: IllegalArgumentException) {
             bot.reply(
                 sender,
                 messageID,
@@ -494,28 +490,34 @@ fun main() = runBlocking {
         }
 
         val searchPage = try {
-            search(keyword, page)
+            search(arguments.keyword, arguments.page, arguments.options)
         } catch (exception: Exception) {
-            logger.warn("Search failed for {} page {}: {}", source, page, keyword, exception)
+            logger.warn(
+                "Search failed for {} page {}: {}",
+                source,
+                arguments.page,
+                arguments.keyword,
+                exception,
+            )
             bot.reply(sender, messageID, translator.translate("command.search.failed"))
             return@CommandExecutor
         }
         if (searchPage.results.isEmpty()) {
-            bot.reply(sender, messageID, translator.translate("command.search.empty", keyword))
+            bot.reply(sender, messageID, translator.translate("command.search.empty", arguments.keyword))
             return@CommandExecutor
         }
 
         val nodes = searchPage.results.take(SEARCH_RESULT_LIMIT).mapIndexed { index, result ->
             ForwardMessageNode.CustomMessage(
-                userID = sender.user.userID,
                 nickname = if (source == "eh") "E-Hentai #${index + 1}" else "JMComic #${index + 1}",
                 content = MessageChain.text(
                     formatSearchResult(
                         source = source,
-                        result = result,
-                        index = index + 1,
-                        commandOperator = config.getConfig().bot.commandOperator,
-                    )
+                                result = result,
+                                index = index + 1,
+                                commandOperator = config.getConfig().bot.commandOperator,
+                                translator = translator,
+                            )
                 ),
             )
         }
@@ -601,23 +603,61 @@ fun main() = runBlocking {
     }
 }
 
-private fun formatSearchResult(
+internal fun formatSearchResult(
     source: String,
     result: ComicSearchResult<*>,
     index: Int,
     commandOperator: Char,
+    translator: Translator,
 ): String = buildString {
-    appendLine("#$index ${result.title}")
-    result.subtitle?.takeIf(String::isNotBlank)?.let { appendLine(it) }
     val target = if (source == "eh") result.url else "JM${result.id}"
-    appendLine(if (source == "eh") "E-Hentai" else "JM${result.id}")
-    result.pages?.let { appendLine("$it pages") }
-    result.rating?.let { appendLine("Rating: $it") }
-    if (result.tags.isNotEmpty()) {
-        appendLine(result.tags.take(8).joinToString(" · "))
+    val sourceLabel = if (source == "eh") "E-Hentai" else "JMComic · JM${result.id}"
+    appendLine(translator.translate("search.result.header", index, sourceLabel))
+    appendLine(translator.translate("gallery.title", result.title))
+    result.subtitle?.takeIf(String::isNotBlank)?.let {
+        appendLine(
+            translator.translate(
+                if (source == "eh") "gallery.uploader" else "search.result.author",
+                it,
+            )
+        )
     }
-    appendLine(result.url)
-    append("$commandOperator get $source $target")
+    result.category?.takeIf(String::isNotBlank)?.let {
+        appendLine(translator.translate("gallery.type", it))
+    }
+    result.pages?.let { appendLine(translator.translate("gallery.pages", it)) }
+    result.rating?.let { appendLine(translator.translate("gallery.rating", it)) }
+    if (result.tags.isNotEmpty()) {
+        appendLine()
+        appendLine(translator.translate("search.result.tags"))
+        val distinctTags = result.tags.distinct()
+        val visibleTags = distinctTags.take(SEARCH_TAG_LIMIT)
+        val groupedTags = linkedMapOf<String?, MutableList<String>>()
+        visibleTags.forEach { tag ->
+            val separator = tag.indexOf(':')
+            val namespace = if (separator > 0) tag.substring(0, separator).trim() else null
+            val value = if (separator > 0) tag.substring(separator + 1).trim() else tag.trim()
+            groupedTags.getOrPut(namespace) { mutableListOf() } += value
+        }
+        groupedTags.forEach { (namespace, values) ->
+            append("  ")
+            if (namespace != null) append("$namespace: ")
+            appendLine(values.joinToString(", "))
+        }
+        val omittedCount = distinctTags.size - visibleTags.size
+        if (omittedCount > 0) {
+            appendLine(translator.translate("search.result.more_tags", omittedCount))
+        }
+    }
+    appendLine()
+    appendLine(translator.translate("search.result.link", result.url))
+    append(
+        translator.translate(
+            "search.result.command",
+            "${commandOperator}get $source $target",
+        )
+    )
 }
 
 private const val SEARCH_RESULT_LIMIT = 10
+private const val SEARCH_TAG_LIMIT = 16

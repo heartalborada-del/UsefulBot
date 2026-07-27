@@ -12,7 +12,11 @@ sealed interface ForwardMessageNode {
     data class ExistingMessage(val messageID: Long) : ForwardMessageNode
 
     data class CustomMessage(
-        val userID: Long,
+        /**
+         * Displayed QQ source. A null value asks the bot implementation to use
+         * its own account, with an invalid account as a last-resort fallback.
+         */
+        val userID: Long? = null,
         val nickname: String,
         val content: MessageChain,
     ) : ForwardMessageNode {

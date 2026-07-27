@@ -5,6 +5,7 @@ import com.google.gson.JsonParser
 import me.heartalborada.commons.comic.AbstractComicProvider
 import me.heartalborada.commons.comic.model.ArchiveInformation
 import me.heartalborada.commons.comic.model.ComicInformation
+import me.heartalborada.commons.comic.model.ComicSearchOptions
 import me.heartalborada.commons.comic.model.ComicSearchPage
 import me.heartalborada.commons.comic.model.ComicSearchResult
 import me.heartalborada.commons.okhttp.CookieStorageProvider
@@ -89,12 +90,14 @@ class EHentai(
     private val imageUrlRegex =
         Regex("https?://([0-9a-zA-Z.]+)hath.network(:\\d+|)([0-9a-zA-Z-=;_/]+)\\.(?:jpg|jpeg|gif|png|webp)")
 
-    override fun search(keyword: String, page: Int): ComicSearchPage<Pair<String, String>> {
+    override fun search(
+        keyword: String,
+        page: Int,
+        options: ComicSearchOptions,
+    ): ComicSearchPage<Pair<String, String>> {
         require(keyword.isNotBlank()) { "Search keyword must not be blank." }
         require(page > 0) { "Search page must be greater than zero." }
-        var url = "$baseUrl/".toHttpUrl().newBuilder()
-            .addQueryParameter("f_search", keyword.trim())
-            .build()
+        var url = buildSearchUrl(keyword, options)
         for (currentPage in 1..page) {
             val html = okHttpClient.newCall(Request.Builder().url(url).build()).execute().use { it.precheck() }
             val result = parseSearchHtml(html, currentPage)
@@ -107,6 +110,25 @@ class EHentai(
             url = nextUrl.toHttpUrl()
         }
         return ComicSearchPage(results = emptyList(), page = page)
+    }
+
+    internal fun buildSearchUrl(keyword: String, options: ComicSearchOptions = ComicSearchOptions()): HttpUrl {
+        require(keyword.isNotBlank()) { "Search keyword must not be blank." }
+        val builder = "$baseUrl/".toHttpUrl().newBuilder()
+            .addQueryParameter("f_search", keyword.trim())
+        if (options.categories.isNotEmpty()) {
+            val selectedMask = options.categories.fold(0) { mask, category ->
+                mask or category.filterMask
+            }
+            val excludedMask = ALL_CATEGORY_MASK xor selectedMask
+            if (excludedMask != 0) {
+                builder.addQueryParameter("f_cats", excludedMask.toString())
+            }
+        }
+        options.minStars?.let {
+            builder.addQueryParameter("f_srdd", it.toString())
+        }
+        return builder.build()
     }
 
     internal fun parseSearchHtml(html: String, page: Int = 1): ComicSearchPage<Pair<String, String>> {
@@ -130,6 +152,9 @@ class EHentai(
             val image = item.selectFirst("img")
             val cover = image?.attr("data-src")?.takeIf(String::isNotBlank)
                 ?: image?.attr("src")?.takeIf(String::isNotBlank)
+            val category = item.selectFirst(".cn, .cs")
+                ?.text()
+                ?.takeIf(String::isNotBlank)
             val tags = item.select("div.gt[title], div.gtl[title]")
                 .map { it.attr("title").trim() }
                 .filter(String::isNotEmpty)
@@ -156,6 +181,7 @@ class EHentai(
                 url = url,
                 subtitle = uploader,
                 cover = cover,
+                category = category,
                 tags = tags,
                 pages = pages,
                 rating = rating,
@@ -466,3 +492,5 @@ class EHentai(
         RESAMPLE
     }
 }
+
+private const val ALL_CATEGORY_MASK = 1023

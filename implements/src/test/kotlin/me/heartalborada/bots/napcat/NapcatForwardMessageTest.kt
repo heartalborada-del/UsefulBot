@@ -63,4 +63,24 @@ class NapcatForwardMessageTest {
             buildForwardMessageParams(ChatType.SELF, 456L, nodes, messageGson)
         }
     }
+
+    @Test
+    fun `custom node defaults to the bot account`() {
+        val params = buildForwardMessageParams(
+            type = ChatType.GROUP,
+            target = 456L,
+            messages = listOf(
+                ForwardMessageNode.CustomMessage(
+                    nickname = "UsefulBot",
+                    content = MessageChain.text("result"),
+                )
+            ),
+            gson = messageGson,
+            defaultUserID = 987654321L,
+        )
+
+        val nodes = params["messages"] as com.google.gson.JsonArray
+        val data = nodes.single().asJsonObject.getAsJsonObject("data")
+        assertEquals(987654321L, data["user_id"].asLong)
+    }
 }
