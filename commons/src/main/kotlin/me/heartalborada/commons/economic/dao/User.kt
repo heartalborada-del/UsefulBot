@@ -5,8 +5,8 @@ import org.jetbrains.exposed.dao.Entity
 import org.jetbrains.exposed.dao.EntityClass
 import org.jetbrains.exposed.dao.id.EntityID
 
-class User(id: EntityID<ULong>) : Entity<ULong>(id) {
-    companion object : EntityClass<ULong, User>(UsersTable)
+class User(id: EntityID<String>) : Entity<String>(id) {
+    companion object : EntityClass<String, User>(UsersTable)
 
     var createdAt by UsersTable.createdAt
     var updatedAt by UsersTable.updatedAt

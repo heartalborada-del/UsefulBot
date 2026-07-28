@@ -1,6 +1,7 @@
 package me.heartalborada.state
 
 import com.google.gson.GsonBuilder
+import com.google.gson.JsonArray
 import com.google.gson.JsonParser
 import me.heartalborada.commons.ChatType
 import java.io.File
@@ -54,7 +55,7 @@ data class OutboxDelivery(
 private data class DailyUsage(val date: String, val count: Int)
 
 private data class BotState(
-    val bannedUsers: MutableSet<Long> = mutableSetOf(),
+    val bannedUsers: MutableSet<String> = mutableSetOf(),
     val preferences: MutableMap<String, UserPreference> = mutableMapOf(),
     val dailyUsage: MutableMap<String, DailyUsage> = mutableMapOf(),
     val pendingTasks: MutableMap<String, PersistentTask> = mutableMapOf(),
@@ -66,11 +67,13 @@ class BotStateStore(private val file: File) {
     private var state = load()
 
     @Synchronized
-    fun isBanned(userId: Long): Boolean = userId in state.bannedUsers
+    fun isBanned(identity: String): Boolean = identity.lowercase() in state.bannedUsers
 
     @Synchronized
-    fun setBanned(userId: Long, banned: Boolean) {
-        if (banned) state.bannedUsers.add(userId) else state.bannedUsers.remove(userId)
+    fun setBanned(identity: String, banned: Boolean) {
+        val normalized = identity.trim().lowercase()
+        require(normalized.isNotEmpty()) { "Identity must not be blank." }
+        if (banned) state.bannedUsers.add(normalized) else state.bannedUsers.remove(normalized)
         save()
     }
 
@@ -172,6 +175,19 @@ class BotStateStore(private val file: File) {
         if (!file.isFile || file.length() == 0L) return BotState()
         return runCatching {
             val root = JsonParser.parseString(file.readText(Charsets.UTF_8)).asJsonObject
+            root.getAsJsonArray("bannedUsers")?.let { existing ->
+                val normalized = JsonArray()
+                existing.forEach { item ->
+                    val value = item.asString.trim().lowercase()
+                    if (':' in value) {
+                        normalized.add(value)
+                    } else if (value.toLongOrNull() != null) {
+                        normalized.add("tg:$value")
+                        normalized.add("qq:$value")
+                    }
+                }
+                root.add("bannedUsers", normalized)
+            }
             val defaults = gson.toJsonTree(BotState()).asJsonObject
             defaults.entrySet().forEach { (key, value) ->
                 if (!root.has(key)) root.add(key, value.deepCopy())

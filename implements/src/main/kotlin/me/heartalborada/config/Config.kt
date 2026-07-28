@@ -3,6 +3,7 @@ package me.heartalborada.config
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.google.gson.JsonPrimitive
 import com.google.gson.JsonSyntaxException
 import me.heartalborada.commons.configurations.AbstractConfiguration
 import org.apache.commons.io.FileUtils
@@ -89,6 +90,7 @@ internal object ConfigMigration {
                 6 -> Unit
                 7 -> migrateV7ToV8(root)
                 8 -> Unit
+                9 -> migrateV9ToV10(root)
                 else -> error("No config migration is available for version $version.")
             }
             version++
@@ -177,6 +179,21 @@ internal object ConfigMigration {
             ?.asString
         if (policy.equals("TELEGRAPH", ignoreCase = true)) {
             largeFile.addProperty("Policy", LargeFilePolicy.SPLIT_PDF.name)
+        }
+    }
+
+    private fun migrateV9ToV10(root: JsonObject) {
+        val access = root.get("Access")
+            ?.takeIf { it.isJsonObject }
+            ?.asJsonObject
+            ?: return
+        listOf("AdminUserIds", "AllowedUserIds", "AllowedChatIds", "BlockedUserIds").forEach { key ->
+            val values = access.get(key)?.takeIf { it.isJsonArray }?.asJsonArray ?: return@forEach
+            values.forEachIndexed { index, value ->
+                if (value.isJsonPrimitive && value.asJsonPrimitive.isNumber) {
+                    values.set(index, JsonPrimitive(value.asString))
+                }
+            }
         }
     }
 

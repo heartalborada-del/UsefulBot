@@ -265,6 +265,28 @@ class ConfigDataTest {
     }
 
     @Test
+    fun `version nine access IDs are upgraded to strings`() {
+        val configFile = Files.createTempFile("useful-bot-v9-config-", ".json").toFile()
+        try {
+            configFile.writeText(
+                """{"version":9,"Access":{"AdminUserIds":[7],"AllowedUserIds":[8],"AllowedChatIds":[-9],"BlockedUserIds":[10]}}""",
+            )
+
+            val config = Config(configFile).getConfig()
+
+            assertEquals(ConfigData.CURRENT_VERSION, config.version)
+            assertEquals(listOf("7"), config.access.adminUserIds)
+            assertEquals(listOf("8"), config.access.allowedUserIds)
+            assertEquals(listOf("-9"), config.access.allowedChatIds)
+            assertEquals(listOf("10"), config.access.blockedUserIds)
+            val access = JsonParser.parseString(configFile.readText()).asJsonObject.getAsJsonObject("Access")
+            assertTrue(access.getAsJsonArray("AdminUserIds")[0].asJsonPrimitive.isString)
+        } finally {
+            configFile.delete()
+        }
+    }
+
+    @Test
     fun `version five config gains Telegram PDF splitting settings`() {
         val configFile = Files.createTempFile("useful-bot-v5-config-", ".json").toFile()
         try {

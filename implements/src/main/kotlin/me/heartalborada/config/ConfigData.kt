@@ -16,10 +16,10 @@ data class ConfigData @JvmOverloads constructor(
     @SerializedName("Batch") val batch: Batch = Batch(),
 ) {
     data class Access @JvmOverloads constructor(
-        @SerializedName("AdminUserIds") val adminUserIds: List<Long> = emptyList(),
-        @SerializedName("AllowedUserIds") val allowedUserIds: List<Long> = emptyList(),
-        @SerializedName("AllowedChatIds") val allowedChatIds: List<Long> = emptyList(),
-        @SerializedName("BlockedUserIds") val blockedUserIds: List<Long> = emptyList(),
+        @SerializedName("AdminUserIds") val adminUserIds: List<String> = emptyList(),
+        @SerializedName("AllowedUserIds") val allowedUserIds: List<String> = emptyList(),
+        @SerializedName("AllowedChatIds") val allowedChatIds: List<String> = emptyList(),
+        @SerializedName("BlockedUserIds") val blockedUserIds: List<String> = emptyList(),
         @SerializedName("CommandsPerMinute") val commandsPerMinute: Int = 20,
         @SerializedName("DailyDownloadLimit") val dailyDownloadLimit: Int = 20,
     )
@@ -123,7 +123,7 @@ data class ConfigData @JvmOverloads constructor(
     )
 
     companion object {
-        const val CURRENT_VERSION = 9
+        const val CURRENT_VERSION = 10
     }
 }
 

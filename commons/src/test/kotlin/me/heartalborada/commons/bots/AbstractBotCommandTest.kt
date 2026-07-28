@@ -181,6 +181,33 @@ class AbstractBotCommandTest {
     }
 
     @Test
+    fun `hidden commands are omitted from help for unauthorized senders`() {
+        val bot = FakeBot()
+        bot.registerCommand("admin", usage = "/admin <action>") {
+            subcommand("status", usage = "/admin status") { _, _, _, _ -> }
+        }
+        bot.setCommandVisibility("admin") { it.user.userID == 1L }
+        bot.connect()
+
+        bot.broadcast("/help", messageID = 19L)
+        val globalHelp = (bot.sent.poll(2, TimeUnit.SECONDS)[1] as PlainText).text
+        assertTrue("/admin" !in globalHelp)
+
+        bot.broadcast("/help admin", messageID = 20L)
+        val scopedHelp = (bot.sent.poll(2, TimeUnit.SECONDS)[1] as PlainText).text
+        assertTrue("/admin" !in scopedHelp)
+
+        bot.broadcast("/admin", messageID = 21L)
+        val hiddenCommand = (bot.sent.poll(2, TimeUnit.SECONDS)[1] as PlainText).text
+        assertTrue(hiddenCommand.contains("Unknown command"))
+        assertTrue("/admin status" !in hiddenCommand)
+
+        bot.broadcast("/help", messageID = 22L, user = UserInfo(1L, "admin"))
+        val adminHelp = (bot.sent.poll(2, TimeUnit.SECONDS)[1] as PlainText).text
+        assertTrue(adminHelp.contains("/admin status"))
+    }
+
+    @Test
     fun `command error handlers receive the full operation and control the safe reply`() {
         val bot = FakeBot()
         val captured = CompletableFuture<Pair<String, Throwable>>()
@@ -254,9 +281,9 @@ class AbstractBotCommandTest {
 
         override fun sendFile(type: ChatType, target: Long, name: String, file: File): Boolean = true
 
-        fun broadcast(text: String, messageID: Long) {
+        fun broadcast(text: String, messageID: Long, user: UserInfo = sender) {
             events.broadcast(
-                PrivateMessageEvent(1L, 0L, sender, MessageChain.text(text), messageID)
+                PrivateMessageEvent(1L, 0L, user, MessageChain.text(text), messageID)
             )
         }
     }

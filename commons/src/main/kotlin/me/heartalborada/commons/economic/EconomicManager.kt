@@ -48,7 +48,7 @@ class EconomicManager(
         }
     }
 
-    fun getUser(id: ULong): User {
+    fun getUser(id: String): User {
         return withUserLock(id) {
             transaction(db) {
                 ensureUser(id)
@@ -63,7 +63,7 @@ class EconomicManager(
         }
     }
 
-    fun getBalance(userId: ULong): Long {
+    fun getBalance(userId: String): Long {
         return withUserLock(userId) {
             transaction(db) {
                 ensureUser(userId)
@@ -75,7 +75,7 @@ class EconomicManager(
         }
     }
 
-    private fun ensureUser(id: ULong) {
+    private fun ensureUser(id: String) {
         val exists = UsersTable.selectAll()
             .where { UsersTable.id eq id }
             .limit(1)
@@ -87,7 +87,7 @@ class EconomicManager(
         }
     }
 
-    fun depositGP(userId: ULong, amount: Long): Boolean {
+    fun depositGP(userId: String, amount: Long): Boolean {
         if (amount <= 0) return false
         return withUserLock(userId) {
             transaction(db) {
@@ -110,7 +110,7 @@ class EconomicManager(
         }
     }
 
-    fun withdrawGP(userId: ULong, amount: Long): Boolean {
+    fun withdrawGP(userId: String, amount: Long): Boolean {
         if (amount <= 0) return false
         return withUserLock(userId) {
             transaction(db) {
@@ -133,7 +133,7 @@ class EconomicManager(
         }
     }
 
-    fun userCheckIn(userId: ULong, minAward: Int = 150, maxAward: Int = 250): Pair<Long, Boolean> {
+    fun userCheckIn(userId: String, minAward: Int = 150, maxAward: Int = 250): Pair<Long, Boolean> {
         require(minAward > 0) { "Check-in reward must be positive." }
         require(maxAward >= minAward) { "Check-in reward upper bound must not be smaller than the lower bound." }
         require(maxAward < Int.MAX_VALUE) { "Check-in reward upper bound is too large." }
@@ -167,7 +167,7 @@ class EconomicManager(
         }
     }
 
-    fun queryRecord(userId: ULong, limit: Int = 10): List<GPRecord> {
+    fun queryRecord(userId: String, limit: Int = 10): List<GPRecord> {
         if (limit <= 0) return emptyList()
         val safeLimit = limit.coerceAtMost(MAX_RECORD_QUERY_LIMIT)
         return transaction(db) {
@@ -186,7 +186,7 @@ class EconomicManager(
 
     fun userCount(): Long = transaction(db) { UsersTable.selectAll().count() }
 
-    fun setRole(userId: ULong, role: UsersTable.Role): Boolean = withUserLock(userId) {
+    fun setRole(userId: String, role: UsersTable.Role): Boolean = withUserLock(userId) {
         transaction(db) {
             ensureUser(userId)
             UsersTable.update({ UsersTable.id eq userId }) {
@@ -197,7 +197,7 @@ class EconomicManager(
     }
 
     private fun createRecord(
-        userId: ULong,
+        userId: String,
         operation: GPRecordsTable.RecordType,
         amount: Long,
         createdAt: Instant,
@@ -210,7 +210,7 @@ class EconomicManager(
         }
     }
 
-    private inline fun <T> withUserLock(userId: ULong, block: () -> T): T {
+    private inline fun <T> withUserLock(userId: String, block: () -> T): T {
         val index = (userId.hashCode() and Int.MAX_VALUE) % userLocks.size
         return userLocks[index].withLock(block)
     }

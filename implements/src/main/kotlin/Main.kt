@@ -97,7 +97,7 @@ private val config = Config(File(rootFolder, "config.json"))
 private val translator = PropertiesTranslator(config.getConfig().bot.language)
 private val economicDataSource = run {
     dataFolder.mkdirs()
-    JdbcConnectionPool.create("jdbc:h2:./data/gp;LOCK_TIMEOUT=10000", "sa", "").apply {
+    JdbcConnectionPool.create("jdbc:h2:./data/data;LOCK_TIMEOUT=10000", "sa", "").apply {
         maxConnections = (config.getConfig().comicParallelCount + 4).coerceIn(8, 32)
         loginTimeout = 10
         Runtime.getRuntime().addShutdownHook(Thread({ dispose() }, "economic-database-shutdown"))
@@ -236,10 +236,6 @@ private fun cleanupComicTaskCache(task: ComicTask) {
 }
 
 fun main() = runBlocking {
-    config.getConfig().access.adminUserIds.forEach { userId ->
-        require(userId > 0) { "Administrator user IDs must be positive." }
-        economic.setRole(userId.toULong(), UsersTable.Role.ADMIN)
-    }
     val telegramFileIdCache = TelegramFileIdCache(economicDatabase)
     val telegramLargeDocumentSenders = ConcurrentHashMap<TelegramBot, TelegramLargeDocumentSender>()
     val commandErrorLogger = CommandErrorLogger(File(rootFolder, "error"))
@@ -592,7 +588,7 @@ fun main() = runBlocking {
             .coerceAtLeast(1L)
         val subscribers = queue.getSubscribers(ComicTask.EHentai(gallery)).map { it.second }
         if (subscribers.none { extra ->
-                economic.getBalance(extra.sender.user.userID.toULong()) >= cost
+                economic.getBalance(AccessController.identity(extra.adapter, extra.sender.user.userID)) >= cost
             }
         ) {
             return ComicTaskResult.EHentai(
@@ -687,7 +683,7 @@ fun main() = runBlocking {
                     ),
                 )
             } else if (result.cost > 0) {
-                val userId = sender.user.userID.toULong()
+                val userId = AccessController.identity(bot.adapterKey(), sender.user.userID)
                 bot.reply(
                     sender,
                     messageID,
@@ -701,7 +697,7 @@ fun main() = runBlocking {
         if (result.cacheHit) {
             bot.reply(sender, messageID, messageTranslator.translate("gallery.cache_hit"))
         } else {
-            val userId = sender.user.userID.toULong()
+            val userId = AccessController.identity(bot.adapterKey(), sender.user.userID)
             if (!economic.withdrawGP(userId, result.cost)) {
                 bot.reply(
                     sender,
@@ -728,7 +724,7 @@ fun main() = runBlocking {
             )
         } catch (exception: Exception) {
             if (!result.cacheHit) {
-                economic.depositGP(sender.user.userID.toULong(), result.cost)
+                economic.depositGP(AccessController.identity(bot.adapterKey(), sender.user.userID), result.cost)
             }
             enqueueFailedDelivery(
                 extra,
@@ -740,7 +736,7 @@ fun main() = runBlocking {
         }
         if (!sent) {
             if (!result.cacheHit) {
-                economic.depositGP(sender.user.userID.toULong(), result.cost)
+                economic.depositGP(AccessController.identity(bot.adapterKey(), sender.user.userID), result.cost)
             }
             enqueueFailedDelivery(
                 extra,
@@ -768,7 +764,7 @@ fun main() = runBlocking {
     ) {
         check(pdf.isFile) { "JMComic PDF does not exist: ${pdf.absolutePath}" }
         val cost = ComicPricing.jmPdfCost(pdf.length())
-        val userId = sender.user.userID.toULong()
+        val userId = AccessController.identity(bot.adapterKey(), sender.user.userID)
         val charged = cost > 0
         if (charged && !economic.withdrawGP(userId, cost)) {
             bot.reply(
@@ -1069,7 +1065,7 @@ fun main() = runBlocking {
         if (command == "checkin") {
             return@CommandExecutor
         }
-        val userId = sender.user.userID.toULong()
+        val userId = AccessController.identity(bot.adapterKey(), sender.user.userID)
         val (amount, checkedIn) = economic.userCheckIn(userId)
         if (checkedIn) {
             bot.reply(
@@ -1355,7 +1351,7 @@ fun main() = runBlocking {
 
     bot.registerCommand("checkin", usage = translator.translate("command.checkin.usage")) {
         sender, _, _, messageID ->
-        val userId = sender.user.userID.toULong()
+        val userId = AccessController.identity(bot.adapterKey(), sender.user.userID)
         val (amount, success) = economic.userCheckIn(userId)
         if (success) {
             bot.reply(
@@ -1374,13 +1370,22 @@ fun main() = runBlocking {
 
     bot.registerCommand("info", usage = translator.translate("command.info.usage")) {
         sender, _, _, messageID ->
-        val user = economic.getUser(sender.user.userID.toULong())
+        val user = economic.getUser(AccessController.identity(bot.adapterKey(), sender.user.userID))
         val lastCheckIn = user.checkinAt.atZone(ZoneOffset.UTC)
             .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss 'UTC'"))
         bot.reply(
             sender,
             messageID,
-            translator.translate("command.info.content", user.role.name, user.balance, lastCheckIn)
+            translator.translate(
+                "command.info.content",
+                if (accessController.isAdmin(bot.adapterKey(), sender.user.userID)) {
+                    UsersTable.Role.ADMIN.name
+                } else {
+                    UsersTable.Role.USER.name
+                },
+                user.balance,
+                lastCheckIn,
+            )
         )
     }
 
@@ -1432,7 +1437,7 @@ fun main() = runBlocking {
         sender, _, args, messageID ->
         val limit = args.toString().trim().toIntOrNull()?.coerceIn(1, 50) ?: 10
         val userTranslator = translatorFor(preference(bot, sender.user.userID).language)
-        val records = economic.queryRecord(sender.user.userID.toULong(), limit)
+        val records = economic.queryRecord(AccessController.identity(bot.adapterKey(), sender.user.userID), limit)
         val text = if (records.isEmpty()) {
             userTranslator.translate("command.history.empty")
         } else {
@@ -1543,7 +1548,7 @@ fun main() = runBlocking {
     }
 
     fun requireAdmin(sender: MessageSender, messageID: Long): Boolean {
-        if (accessController.isAdmin(sender.user.userID)) return true
+        if (accessController.isAdmin(bot.adapterKey(), sender.user.userID)) return true
         bot.reply(sender, messageID, translatorFor(preference(bot, sender.user.userID).language).translate("admin.denied"))
         return false
     }
@@ -1571,7 +1576,7 @@ fun main() = runBlocking {
         subcommand("gp", usage = translator.translate("command.admin.gp.usage")) { sender, _, args, messageID ->
             if (!requireAdmin(sender, messageID)) return@subcommand
             val parts = args.toString().trim().split(Regex("\\s+"))
-            val userId = parts.getOrNull(0)?.toULongOrNull()
+            val userId = parts.getOrNull(0)?.let(AccessController::normalizeScopedIdentity)
             val amount = parts.getOrNull(1)?.toLongOrNull()
             val success = when {
                 userId == null || amount == null || amount == 0L -> false
@@ -1583,16 +1588,16 @@ fun main() = runBlocking {
         }
         subcommand("ban", usage = translator.translate("command.admin.ban.usage")) { sender, _, args, messageID ->
             if (!requireAdmin(sender, messageID)) return@subcommand
-            val userId = args.toString().trim().toLongOrNull()
-            if (userId == null) bot.reply(sender, messageID, "Invalid user ID.") else {
-                stateStore.setBanned(userId, true); bot.reply(sender, messageID, "Banned $userId.")
+            val identity = AccessController.normalizeScopedIdentity(args.toString())
+            if (identity == null) bot.reply(sender, messageID, "Invalid identity; use tg:id or qq:id.") else {
+                stateStore.setBanned(identity, true); bot.reply(sender, messageID, "Banned $identity.")
             }
         }
         subcommand("unban", usage = translator.translate("command.admin.unban.usage")) { sender, _, args, messageID ->
             if (!requireAdmin(sender, messageID)) return@subcommand
-            val userId = args.toString().trim().toLongOrNull()
-            if (userId == null) bot.reply(sender, messageID, "Invalid user ID.") else {
-                stateStore.setBanned(userId, false); bot.reply(sender, messageID, "Unbanned $userId.")
+            val identity = AccessController.normalizeScopedIdentity(args.toString())
+            if (identity == null) bot.reply(sender, messageID, "Invalid identity; use tg:id or qq:id.") else {
+                stateStore.setBanned(identity, false); bot.reply(sender, messageID, "Unbanned $identity.")
             }
         }
         subcommand("cache", usage = translator.translate("command.admin.cache.usage")) { sender, _, _, messageID ->
@@ -1612,6 +1617,9 @@ fun main() = runBlocking {
             if (result.status != ProcessingQueue.CancelStatus.NOT_FOUND) stateStore.completeTask(id)
             bot.reply(sender, messageID, result.status.name)
         }
+    }
+    bot.setCommandVisibility("health", "admin") { sender ->
+        accessController.isAdmin(bot.adapterKey(), sender.user.userID)
     }
     }
 
@@ -1710,8 +1718,8 @@ fun main() = runBlocking {
             val freeMiB = dataFolder.usableSpace / 1024 / 1024
             if (freeMiB < config.getConfig().cache.minimumFreeSpaceMiB) {
                 logger.warn("Low disk space: {} MiB available under data directory.", freeMiB)
-                config.getConfig().access.adminUserIds.forEach { adminId ->
-                    bots.forEach { (bot, _) ->
+                bots.forEach { (bot, _) ->
+                    accessController.adminTargets(bot.adapterKey()).forEach { adminId ->
                         runCatching {
                             bot.sendMessage(
                                 ChatType.PRIVATE,

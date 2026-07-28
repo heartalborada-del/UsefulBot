@@ -52,6 +52,7 @@ abstract class AbstractBot(
     private val commandMap = linkedMapOf<String, CommandDefinition>()
     private val beforeCommandExecutors = mutableListOf<CommandExecutor>()
     private val commandGuards = mutableListOf<CommandGuard>()
+    private val commandVisibility = mutableMapOf<CommandDefinition, (MessageSender) -> Boolean>()
     private var commandErrorHandler: CommandErrorHandler? = null
     private var isRegistered: Boolean = false
 
@@ -62,9 +63,9 @@ abstract class AbstractBot(
                 .trim()
                 .substringBefore(commandDivider)
                 .lowercase(Locale.ROOT)
-            val helpText = commandMap[requestedCommand]
-                ?.let(::buildCommandHelp)
-                ?: buildGlobalHelp()
+            val definition = commandMap[requestedCommand]
+                ?.takeIf { isCommandVisible(it, sender) }
+            val helpText = definition?.let(::buildCommandHelp) ?: buildGlobalHelp(sender)
             reply(sender, messageID, helpText)
         }
     }
@@ -74,6 +75,7 @@ abstract class AbstractBot(
         commandMap.clear()
         beforeCommandExecutors.clear()
         commandGuards.clear()
+        commandVisibility.clear()
         commandErrorHandler = null
         return true
     }
@@ -159,6 +161,15 @@ abstract class AbstractBot(
         commandErrorHandler = handler
     }
 
+    fun setCommandVisibility(vararg commands: String, visible: (MessageSender) -> Boolean) {
+        require(commands.isNotEmpty()) { "At least one command name is required." }
+        val definitions = commands.map { command ->
+            val normalized = command.trim().lowercase(Locale.ROOT)
+            requireNotNull(commandMap[normalized]) { "Command $normalized is not registered." }
+        }.distinct()
+        definitions.forEach { commandVisibility[it] = visible }
+    }
+
     fun registeredCommands(): List<BotCommand> {
         val seen = mutableSetOf<CommandDefinition>()
         return commandMap.mapNotNull { (name, definition) ->
@@ -229,6 +240,7 @@ abstract class AbstractBot(
             throw IllegalArgumentException("Command $it is not registered.")
         }
         normalizedCommands.forEach(commandMap::remove)
+        commandVisibility.keys.removeAll { definition -> definition !in commandMap.values }
     }
 
     private fun registerCommandEvent(isStartWithAtBot: Boolean = true, operator: Char? = null, divider: Char = ' ') {
@@ -277,13 +289,13 @@ abstract class AbstractBot(
         if (commandName.isEmpty()) return false
 
         val definition = commandMap[commandName]
-        if (definition == null) {
+        if (definition == null || !isCommandVisible(definition, sender)) {
             reply(
                 sender,
                 messageID,
                 translator.translate("command.unknown", "$commandOperator$commandName") +
                     "\n\n" +
-                    buildGlobalHelp()
+                    buildGlobalHelp(sender)
             )
             return true
         }
@@ -371,8 +383,11 @@ abstract class AbstractBot(
         )
     }
 
-    private fun buildGlobalHelp(): String {
-        val definitions = commandMap.values.distinct()
+    private fun isCommandVisible(definition: CommandDefinition, sender: MessageSender): Boolean =
+        commandVisibility[definition]?.invoke(sender) != false
+
+    private fun buildGlobalHelp(sender: MessageSender): String {
+        val definitions = commandMap.values.distinct().filter { isCommandVisible(it, sender) }
         return buildString {
             appendLine(translator.translate("command.help.header"))
             definitions.forEachIndexed { index, definition ->

@@ -34,7 +34,7 @@ class EconomicManagerTest {
     @Test
     fun `deposit and withdrawal update balance and ordered audit records`() {
         val manager = manager()
-        val userId = 10001uL
+        val userId = "qq:10001"
 
         assertEquals(0, manager.getBalance(userId))
         assertFalse(manager.depositGP(userId, 0))
@@ -55,7 +55,7 @@ class EconomicManagerTest {
     @Test
     fun `deposit rejects balance overflow without creating a record`() {
         val manager = manager()
-        val userId = 10004uL
+        val userId = "qq:10004"
 
         assertTrue(manager.depositGP(userId, Long.MAX_VALUE))
         assertFalse(manager.depositGP(userId, 1))
@@ -67,7 +67,7 @@ class EconomicManagerTest {
     fun `schema migration is idempotent and preserves existing balances`() {
         val database = database()
         val firstManager = manager(database = database)
-        val userId = 10005uL
+        val userId = "qq:10005"
         firstManager.depositGP(userId, 125)
 
         val restartedManager = manager(database = database)
@@ -79,7 +79,7 @@ class EconomicManagerTest {
     @Test
     fun `concurrent withdrawals cannot overdraw an account`() {
         val manager = manager()
-        val userId = 10002uL
+        val userId = "qq:10002"
         manager.depositGP(userId, 100)
 
         val executor = Executors.newFixedThreadPool(8)
@@ -98,7 +98,7 @@ class EconomicManagerTest {
     @Test
     fun `concurrent check-ins award only once per UTC day`() {
         val manager = manager(award = 75)
-        val userId = 10003uL
+        val userId = "qq:10003"
 
         val executor = Executors.newFixedThreadPool(8)
         val results = try {
@@ -127,7 +127,18 @@ class EconomicManagerTest {
             },
         )
 
-        assertEquals(Pair(250L, true), manager.userCheckIn(10006uL))
+        assertEquals(Pair(250L, true), manager.userCheckIn("qq:10006"))
         assertEquals(150 to 251, requestedRange)
+    }
+
+    @Test
+    fun `equal numeric IDs on different platforms use isolated accounts`() {
+        val manager = manager()
+
+        assertTrue(manager.depositGP("qq:7", 10))
+        assertTrue(manager.depositGP("tg:7", 20))
+
+        assertEquals(10, manager.getBalance("qq:7"))
+        assertEquals(20, manager.getBalance("tg:7"))
     }
 }

@@ -14,7 +14,7 @@ class BotStateStoreTest {
         val file = directory.resolve("state.json")
         try {
             val store = BotStateStore(file)
-            store.setBanned(5, true)
+            store.setBanned("tg:5", true)
             store.updatePreference("telegram", 5, UserPreference(language = "zh-CN", blurImages = false))
             assertTrue(store.consumeDailyDownload("telegram", 5, 1))
             assertFalse(store.consumeDailyDownload("telegram", 5, 1))
@@ -30,10 +30,28 @@ class BotStateStoreTest {
             assertEquals(1, store.dueDeliveries().size)
 
             val restored = BotStateStore(file)
-            assertTrue(restored.isBanned(5))
+            assertTrue(restored.isBanned("tg:5"))
+            assertFalse(restored.isBanned("qq:5"))
             assertEquals("zh-CN", restored.preference("telegram", 5).language)
             assertEquals("jm-1", restored.pendingTasks().single().id)
             assertEquals(1, restored.outboxSize())
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `legacy numeric bans are migrated to both scoped platforms`() {
+        val directory = Files.createTempDirectory("legacy-bot-state-").toFile()
+        val file = directory.resolve("state.json")
+        try {
+            file.writeText("""{"bannedUsers":[5]}""")
+            val store = BotStateStore(file)
+            assertTrue(store.isBanned("tg:5"))
+            assertTrue(store.isBanned("qq:5"))
+            store.setBanned("tg:5", false)
+            assertFalse(store.isBanned("tg:5"))
+            assertTrue(store.isBanned("qq:5"))
         } finally {
             directory.deleteRecursively()
         }

@@ -48,7 +48,7 @@ java -jar ./implements/build/libs/implements-1.2.0.jar
 
 ```json
 {
-  "version": 9,
+  "version": 10,
   "Bot": {
     "CommandOperator": "/",
     "Language": "zh-CN",
@@ -86,9 +86,9 @@ java -jar ./implements/build/libs/implements-1.2.0.jar
   },
   "ComicParallelCount": 2,
   "Access": {
-    "AdminUserIds": [],
+    "AdminUserIds": ["tg:123456789", "qq:10001"],
     "AllowedUserIds": [],
-    "AllowedChatIds": [],
+    "AllowedChatIds": ["tg:-1001234567890", "qq:123456"],
     "BlockedUserIds": [],
     "CommandsPerMinute": 20,
     "DailyDownloadLimit": 20
@@ -127,7 +127,8 @@ java -jar ./implements/build/libs/implements-1.2.0.jar
 
 ### 访问与运行策略
 
-- `Access.AdminUserIds`：可使用 `/health` 和 `/admin` 的用户 ID；空列表表示没有管理员。
+- 访问控制 ID 使用 `tg:<id>` 或 `qq:<id>`，避免 Telegram 与 QQ 的数字 ID 冲突；旧版纯数字会作为跨平台兼容项读取，但不建议继续使用。
+- `Access.AdminUserIds`：可使用 `/health` 和 `/admin` 的用户 ID；空列表表示没有管理员，非管理员的 `/help` 不显示这些命令。
 - `AllowedUserIds` / `AllowedChatIds`：非空时启用对应白名单；管理员始终可以访问。
 - `CommandsPerMinute` 和 `DailyDownloadLimit`：`0` 表示不限制。
 - `Tasks.StateFile` 保存待恢复任务、失败补发、动态封禁、每日额度和用户偏好。
@@ -262,10 +263,10 @@ data/
 ├─ telegram/
 │  └─ temp/       # Telegram PDF 分卷临时目录
 ├─ bot-state.json # 待恢复任务、补发箱、访问状态和用户偏好
-└─ gp.*           # H2 数据库
+└─ data.*         # H2 数据库
 ```
 
-GP 数据使用 H2 持久化。请在程序停止后备份 `data/gp.mv.db`，避免得到不一致的文件快照。
+GP 数据使用 H2 持久化，用户主键直接保存为 `tg:<id>` 或 `qq:<id>`。数据库文件为 `data/data.mv.db`；本版本不迁移旧的 `data/gp.mv.db`，升级时应删除旧库并让程序重新创建。请在程序停止后备份数据库，避免得到不一致的文件快照。
 
 ## 错误报告
 

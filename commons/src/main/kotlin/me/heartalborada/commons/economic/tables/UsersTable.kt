@@ -7,8 +7,8 @@ import org.jetbrains.exposed.sql.javatime.timestamp
 import java.time.Clock
 import java.time.Instant
 
-object UsersTable : IdTable<ULong>("users") {
-    override val id: Column<EntityID<ULong>> = ulong("id").entityId()
+object UsersTable : IdTable<String>("users") {
+    override val id: Column<EntityID<String>> = varchar("id", 64).entityId()
     val createdAt = timestamp("created_at").clientDefault { Clock.systemUTC().instant() }
     val updatedAt = timestamp("updated_at").clientDefault { Clock.systemUTC().instant() }
     val balance = long("GP").default(0)

@@ -8,7 +8,7 @@ import java.time.Clock
 
 object GPRecordsTable : IdTable<ULong>("records") {
     override val id: Column<EntityID<ULong>> = ulong("id").autoIncrement().entityId()
-    val userId = ulong("user_id").references(UsersTable.id)
+    val userId = varchar("user_id", 64).references(UsersTable.id)
     val createdAt = timestamp("created_at").clientDefault { Clock.systemUTC().instant() }
     val operation = enumeration("operation", RecordType::class)
     val amount = long("amount")
