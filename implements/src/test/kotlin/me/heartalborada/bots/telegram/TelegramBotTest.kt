@@ -17,12 +17,14 @@ import okhttp3.Protocol
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
+import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -167,6 +169,26 @@ class TelegramBotTest {
     fun `rejects an empty token`() {
         assertFailsWith<IllegalArgumentException> {
             TelegramBot(token = "", autoConnect = false)
+        }
+    }
+
+    @Test
+    fun `only the official Bot API applies the 50 MiB upload limit`() {
+        val file = Files.createTempFile("telegram-upload-limit-", ".pdf").toFile()
+        RandomAccessFile(file, "rw").use { it.setLength(50L * 1024 * 1024 + 1) }
+        val officialBot = TelegramBot(token = "test-token", autoConnect = false)
+        val localBot = TelegramBot(
+            token = "test-token",
+            apiBaseUrl = "http://127.0.0.1:8081",
+            autoConnect = false,
+        )
+        try {
+            assertTrue(officialBot.exceedsOfficialUploadLimit(file))
+            assertFalse(localBot.exceedsOfficialUploadLimit(file))
+        } finally {
+            officialBot.close()
+            localBot.close()
+            file.delete()
         }
     }
 

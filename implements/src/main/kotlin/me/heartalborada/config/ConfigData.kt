@@ -36,9 +36,9 @@ data class ConfigData @JvmOverloads constructor(
             @SerializedName("BlurImages") val blurImages: Boolean = false,
             @SerializedName("Token") val token: String = "",
             @SerializedName("ApiBaseURL") val apiBaseUrl: String = "https://api.telegram.org",
+            @SerializedName("UploadTimeoutMinutes") val uploadTimeoutMinutes: Long = 60,
             @SerializedName("EnableInlineMode") val enableInlineMode: Boolean = true,
             @SerializedName("LargeFile") val largeFile: LargeFile = LargeFile(),
-            @SerializedName("TelegraphPreview") val telegraphPreview: TelegraphPreview = TelegraphPreview(),
         ) {
             data class LargeFile @JvmOverloads constructor(
                 @SerializedName("Policy") val policy: LargeFilePolicy = LargeFilePolicy.SPLIT_PDF,
@@ -46,12 +46,6 @@ data class ConfigData @JvmOverloads constructor(
                 @SerializedName("TempDirectory") val tempDirectory: String = "data/telegram/temp",
             )
 
-            data class TelegraphPreview @JvmOverloads constructor(
-                @SerializedName("Enabled") val enabled: Boolean = true,
-                @SerializedName("AccessToken") val accessToken: String = "",
-                @SerializedName("AuthorName") val authorName: String = "UsefulBot",
-                @SerializedName("AuthorURL") val authorUrl: String = "",
-            )
         }
     }
 
@@ -92,12 +86,11 @@ data class ConfigData @JvmOverloads constructor(
     )
 
     companion object {
-        const val CURRENT_VERSION = 7
+        const val CURRENT_VERSION = 8
     }
 }
 
 enum class LargeFilePolicy {
     SPLIT_PDF,
-    TELEGRAPH,
     FAIL,
 }

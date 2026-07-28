@@ -87,6 +87,7 @@ internal object ConfigMigration {
                 4 -> Unit
                 5 -> Unit
                 6 -> Unit
+                7 -> migrateV7ToV8(root)
                 else -> error("No config migration is available for version $version.")
             }
             version++
@@ -154,6 +155,27 @@ internal object ConfigMigration {
                 "BlurImages",
                 legacyBlur?.takeIf { adapter.equals("TELEGRAM", ignoreCase = true) } ?: false,
             )
+        }
+    }
+
+    private fun migrateV7ToV8(root: JsonObject) {
+        val telegram = root.get("Bot")
+            ?.takeIf { it.isJsonObject }
+            ?.asJsonObject
+            ?.get("telegram")
+            ?.takeIf { it.isJsonObject }
+            ?.asJsonObject
+            ?: return
+        telegram.remove("TelegraphPreview")
+        val largeFile = telegram.get("LargeFile")
+            ?.takeIf { it.isJsonObject }
+            ?.asJsonObject
+            ?: return
+        val policy = largeFile.get("Policy")
+            ?.takeIf { it.isJsonPrimitive }
+            ?.asString
+        if (policy.equals("TELEGRAPH", ignoreCase = true)) {
+            largeFile.addProperty("Policy", LargeFilePolicy.SPLIT_PDF.name)
         }
     }
 

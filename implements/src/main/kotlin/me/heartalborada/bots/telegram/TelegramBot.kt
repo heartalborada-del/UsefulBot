@@ -56,6 +56,7 @@ class TelegramBot(
     commandOperator: Char = '/',
     translator: Translator = PropertiesTranslator(),
     private val inlineModeEnabled: Boolean = true,
+    uploadTimeoutMinutes: Long = DEFAULT_UPLOAD_TIMEOUT_MINUTES,
     autoConnect: Boolean = true,
 ) : AbstractBot(
     commandStartWithAt = false,
@@ -66,10 +67,13 @@ class TelegramBot(
     private val gson = Gson()
     private val eventBus = EventBus()
     private val connected = AtomicBoolean(false)
+    private val validatedUploadTimeoutMinutes = uploadTimeoutMinutes.also {
+        require(it > 0) { "Telegram upload timeout must be positive." }
+    }
     private val pollingScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("TelegramPolling"))
     private val client = parentClient.newBuilder()
         .readTimeout(POLL_TIMEOUT_SECONDS + 10L, TimeUnit.SECONDS)
-        .writeTimeout(UPLOAD_WRITE_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+        .writeTimeout(validatedUploadTimeoutMinutes, TimeUnit.MINUTES)
         .build()
     private val apiRoot: String
     private val usesOfficialBotApi: Boolean
@@ -270,7 +274,7 @@ class TelegramBot(
         }
     }
 
-    internal fun shouldUseTelegraphPreview(file: File): Boolean =
+    internal fun exceedsOfficialUploadLimit(file: File): Boolean =
         usesOfficialBotApi && file.length() > OFFICIAL_MAX_UPLOAD_BYTES
 
     internal fun handleUpdate(update: JsonObject) {
@@ -579,7 +583,7 @@ class TelegramBot(
         const val MAX_INLINE_DESCRIPTION_LENGTH = 512
         const val CHAT_SEND_LOCK_COUNT = 64
         const val OFFICIAL_MAX_UPLOAD_BYTES = 50L * 1024 * 1024
-        const val UPLOAD_WRITE_TIMEOUT_MINUTES = 10L
+        const val DEFAULT_UPLOAD_TIMEOUT_MINUTES = 60L
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }

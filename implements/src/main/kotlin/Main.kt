@@ -39,7 +39,6 @@ import me.heartalborada.commons.queue.ProcessingQueue
 import me.heartalborada.config.Config
 import me.heartalborada.config.LargeFilePolicy
 import me.heartalborada.i18n.PropertiesTranslator
-import me.heartalborada.telegraph.TelegraphPublisher
 import okhttp3.Cookie
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
@@ -78,16 +77,6 @@ private val ALLOW_SUFFIX = setOf("jpg", "jpeg", "gif", "png", "webp")
 
 private val config = Config(File(rootFolder, "config.json"))
 private val translator = PropertiesTranslator(config.getConfig().bot.language)
-private val telegraphPublisher by lazy {
-    val telegraph = config.getConfig().bot.telegram.telegraphPreview
-    TelegraphPublisher(
-        client = client,
-        configuredAccessToken = telegraph.accessToken,
-        authorName = telegraph.authorName,
-        authorUrl = telegraph.authorUrl,
-    )
-}
-
 private val economicDataSource = run {
     dataFolder.mkdirs()
     JdbcConnectionPool.create("jdbc:h2:./data/gp;LOCK_TIMEOUT=10000", "sa", "").apply {
@@ -133,9 +122,15 @@ private sealed interface ComicTaskResult {
     ) : ComicTaskResult
 }
 
+private data class ComicInformationPreview(
+    val info: ComicInformation<*>,
+    val cover: File,
+)
+
 private val queue = ProcessingQueue<QueueUser, ComicTask, QueueExtraData>(
     globalCapacity = config.getConfig().comicParallelCount
 )
+private val comicInformationPreviews = ConcurrentHashMap<ComicTask, ComicInformationPreview>()
 
 private fun AbstractBot.reply(sender: MessageSender, messageID: Long, text: String): Long {
     return sendMessage(sender.type, sender.target, MessageChain.replyTo(messageID, text))
@@ -229,25 +224,67 @@ fun main() = runBlocking {
         bot.sendMessage(sender.type, sender.target, message)
     }
 
-    fun sendFileWithTelegraphFallback(
+    fun sendComicInformationOnce(preview: ComicInformationPreview, extra: QueueExtraData): Boolean {
+        if (!extra.tryStartComicInformationDelivery()) return false
+        return try {
+            sendComicInformation(
+                info = preview.info,
+                coverFile = preview.cover,
+                sender = extra.sender,
+                messageID = extra.messageID,
+                bot = extra.bot,
+                blurImages = extra.blurImages,
+            )
+            true
+        } catch (exception: Exception) {
+            extra.retryComicInformationDelivery()
+            throw exception
+        }
+    }
+
+    fun trySendComicInformation(preview: ComicInformationPreview, extra: QueueExtraData) {
+        runCatching { sendComicInformationOnce(preview, extra) }
+            .onFailure { exception ->
+                logger.warn(
+                    "Failed to send early comic information to user {} through {}; it will be retried on delivery.",
+                    extra.sender.user.userID,
+                    extra.bot::class.simpleName,
+                    exception,
+                )
+            }
+    }
+
+    suspend fun publishComicInformation(
+        task: ComicTask,
+        info: ComicInformation<*>,
+        cover: File,
+    ) {
+        val preview = ComicInformationPreview(info, cover)
+        comicInformationPreviews[task] = preview
+        queue.getSubscribers(task).forEach { (_, extra) ->
+            trySendComicInformation(preview, extra)
+        }
+    }
+
+    fun sendPublishedComicInformation(task: ComicTask, extra: QueueExtraData) {
+        comicInformationPreviews[task]?.let { preview ->
+            trySendComicInformation(preview, extra)
+        }
+    }
+
+    fun sendFileWithLargeFilePolicy(
         bot: AbstractBot,
         sender: MessageSender,
         messageID: Long,
         name: String,
         pdf: File,
         pdfPassword: String?,
-        title: String,
-        pages: List<File>,
     ): Boolean {
         if (bot !is TelegramBot) {
             return bot.sendFile(sender.type, sender.target, name, pdf)
         }
         val telegramConfig = config.getConfig().bot.telegram
-        val telegraphConfig = telegramConfig.telegraphPreview
         val largeFileConfig = telegramConfig.largeFile
-        require(largeFileConfig.maxPartSizeMiB in 1..49) {
-            "Telegram MaxPartSizeMiB must be between 1 and 49."
-        }
 
         fun telegramTempDirectory(): File {
             val configured = File(largeFileConfig.tempDirectory)
@@ -276,24 +313,10 @@ fun main() = runBlocking {
             }
         }
 
-        fun publishPreview(): Boolean {
-            check(telegraphConfig.enabled) {
-                "Telegram Telegraph preview fallback is disabled."
-            }
-            val url = telegraphPublisher.publish(
-                title = title,
-                cacheKey = pdf.canonicalPath,
-                pages = pages,
-            )
-            bot.reply(
-                sender,
-                messageID,
-                translator.translate("telegram.telegraph_preview", url),
-            )
-            return true
-        }
-
         fun sendSplitPdf(): Boolean {
+            require(largeFileConfig.maxPartSizeMiB in 1..49) {
+                "Telegram MaxPartSizeMiB must be between 1 and 49."
+            }
             bot.reply(
                 sender,
                 messageID,
@@ -321,10 +344,9 @@ fun main() = runBlocking {
             )
         }
 
-        if (bot.shouldUseTelegraphPreview(pdf)) {
+        if (bot.exceedsOfficialUploadLimit(pdf)) {
             return when (largeFileConfig.policy) {
                 LargeFilePolicy.SPLIT_PDF -> sendSplitPdf()
-                LargeFilePolicy.TELEGRAPH -> publishPreview()
                 LargeFilePolicy.FAIL -> sendUnlockedPdf()
             }
         }
@@ -342,7 +364,6 @@ fun main() = runBlocking {
             )
             when (largeFileConfig.policy) {
                 LargeFilePolicy.SPLIT_PDF -> sendSplitPdf()
-                LargeFilePolicy.TELEGRAPH -> publishPreview()
                 LargeFilePolicy.FAIL -> throw exception
             }
         }
@@ -366,13 +387,19 @@ fun main() = runBlocking {
         try {
         val cover = "cover.${Util.getFileExtensionFromUrl(URL(info.cover))}"
         downloader.downloadFiles(listOf(Pair(info.cover, cover)), cf, 2)
+        val coverFile = File(cf, cover)
+        publishComicInformation(
+            task = ComicTask.EHentai(gallery),
+            info = info,
+            cover = coverFile,
+        )
         val cacheHit = pdfCache.getIfPresent(cacheKey) == true || p.exists()
         val maximumArchiveSizeMiB = config.getConfig().eHentai.maxArchiveSizeMiB
         fun cachedResult(): ComicTaskResult.EHentai =
             ComicTaskResult.EHentai(
                 gallery = gallery,
                 info = info,
-                cover = File(cf, cover),
+                cover = coverFile,
                 pdf = p,
                 pages = listComicPages(cf),
                 cacheHit = true,
@@ -389,7 +416,7 @@ fun main() = runBlocking {
             return ComicTaskResult.EHentai(
                 gallery = gallery,
                 info = info,
-                cover = File(cf, cover),
+                cover = coverFile,
                 pdf = null,
                 pages = emptyList(),
                 cacheHit = false,
@@ -401,7 +428,7 @@ fun main() = runBlocking {
             return ComicTaskResult.EHentai(
                 gallery = gallery,
                 info = info,
-                cover = File(cf, cover),
+                cover = coverFile,
                 pdf = null,
                 pages = emptyList(),
                 cacheHit = false,
@@ -425,7 +452,7 @@ fun main() = runBlocking {
             return ComicTaskResult.EHentai(
                 gallery = gallery,
                 info = info,
-                cover = File(cf, cover),
+                cover = coverFile,
                 pdf = null,
                 pages = emptyList(),
                 cacheHit = false,
@@ -480,7 +507,7 @@ fun main() = runBlocking {
         return ComicTaskResult.EHentai(
             gallery = gallery,
             info = info,
-            cover = File(cf, cover),
+            cover = coverFile,
             pdf = p,
             pages = pages,
             cacheHit = false,
@@ -495,7 +522,7 @@ fun main() = runBlocking {
         val bot = extra.bot
         val sender = extra.sender
         val messageID = extra.messageID
-        sendComicInformation(result.info, result.cover, sender, messageID, bot, extra.blurImages)
+        sendComicInformationOnce(ComicInformationPreview(result.info, result.cover), extra)
 
         val pdf = result.pdf
         if (pdf == null) {
@@ -542,15 +569,13 @@ fun main() = runBlocking {
         }
 
         val sent = try {
-            sendFileWithTelegraphFallback(
+            sendFileWithLargeFilePolicy(
                 bot = bot,
                 sender = sender,
                 messageID = messageID,
                 name = "${result.gallery.first}-${result.gallery.second}.pdf",
                 pdf = pdf,
                 pdfPassword = "${result.gallery.first}-${result.gallery.second}",
-                title = result.info.title,
-                pages = result.pages,
             )
         } catch (exception: Exception) {
             if (!result.cacheHit) {
@@ -575,8 +600,6 @@ fun main() = runBlocking {
         messageID: Long,
         bot: AbstractBot,
         pdfPassword: String,
-        previewTitle: String,
-        previewPages: List<File>,
     ) {
         check(pdf.isFile) { "JMComic PDF does not exist: ${pdf.absolutePath}" }
         val cost = ComicPricing.jmPdfCost(pdf.length())
@@ -602,15 +625,13 @@ fun main() = runBlocking {
                 }
             )
             if (
-                !sendFileWithTelegraphFallback(
+                !sendFileWithLargeFilePolicy(
                     bot = bot,
                     sender = sender,
                     messageID = messageID,
                     name = pdf.name,
                     pdf = pdf,
                     pdfPassword = pdfPassword,
-                    title = previewTitle,
-                    pages = previewPages,
                 )
             ) {
                 if (charged) {
@@ -628,13 +649,18 @@ fun main() = runBlocking {
         }
     }
 
-    fun generateJMComic(albumId: String): ComicTaskResult.JMComic {
+    suspend fun generateJMComic(albumId: String): ComicTaskResult.JMComic {
         val cacheKey = "jm:$albumId"
         val pdf = File(jmPdfFolder, "JM$albumId.pdf")
         val imageDirectory = File(jmImgFolder, "JM$albumId")
         imageDirectory.mkdirs()
         val info = jm.getTargetInformation(albumId)
         val cover = jm.downloadCover(albumId, File(imageDirectory, "cover.jpg"))
+        publishComicInformation(
+            task = ComicTask.JMComic(albumId),
+            info = info,
+            cover = cover,
+        )
 
         if (pdfCache.getIfPresent(cacheKey) == true || pdf.isFile) {
             return ComicTaskResult.JMComic(
@@ -674,7 +700,7 @@ fun main() = runBlocking {
         val bot = extra.bot
         val sender = extra.sender
         val messageID = extra.messageID
-        sendComicInformation(result.info, result.cover, sender, messageID, bot, extra.blurImages)
+        sendComicInformationOnce(ComicInformationPreview(result.info, result.cover), extra)
         if (result.cacheHit) {
             bot.reply(sender, messageID, translator.translate("jm.cache_hit"))
         } else {
@@ -690,8 +716,6 @@ fun main() = runBlocking {
             messageID = messageID,
             bot = bot,
             pdfPassword = "JM${result.albumId}",
-            previewTitle = result.info.title,
-            previewPages = result.pages,
         )
     }
 
@@ -775,6 +799,7 @@ fun main() = runBlocking {
                     commandOperator = botConfig.commandOperator,
                     translator = translator,
                     inlineModeEnabled = botConfig.telegram.enableInlineMode,
+                    uploadTimeoutMinutes = botConfig.telegram.uploadTimeoutMinutes,
                     autoConnect = false,
                 ) to botConfig.telegram.blurImages
             )
@@ -821,10 +846,12 @@ fun main() = runBlocking {
             return@CommandExecutor
         }
 
+        val task = ComicTask.EHentai(gallery)
+        val extra = QueueExtraData(messageID, sender, bot, blurImages)
         val result = queue.putOrJoin(
             QueueUser(bot, sender.user.userID),
-            ComicTask.EHentai(gallery),
-            QueueExtraData(messageID, sender, bot, blurImages)
+            task,
+            extra,
         )
         val response = when (result) {
             ProcessingQueue.PutStatus.QUEUE_FULL ->
@@ -841,6 +868,9 @@ fun main() = runBlocking {
                 translator.translate("command.eh.queue_failed")
         }
         bot.reply(sender, messageID, response)
+        if (result == ProcessingQueue.PutStatus.SUCCESS || result == ProcessingQueue.PutStatus.JOINED_TASK) {
+            sendPublishedComicInformation(task, extra)
+        }
     }
 
     val getJMExecutor = CommandExecutor { sender, _, args, messageID ->
@@ -859,10 +889,12 @@ fun main() = runBlocking {
             bot.reply(sender, messageID, translator.translate("command.jm.invalid_target"))
             return@CommandExecutor
         }
+        val task = ComicTask.JMComic(albumId)
+        val extra = QueueExtraData(messageID, sender, bot, blurImages)
         val result = queue.putOrJoin(
             QueueUser(bot, sender.user.userID),
-            ComicTask.JMComic(albumId),
-            QueueExtraData(messageID, sender, bot, blurImages)
+            task,
+            extra,
         )
         val response = when (result) {
             ProcessingQueue.PutStatus.QUEUE_FULL ->
@@ -879,6 +911,9 @@ fun main() = runBlocking {
                 translator.translate("command.jm.queue_failed")
         }
         bot.reply(sender, messageID, response)
+        if (result == ProcessingQueue.PutStatus.SUCCESS || result == ProcessingQueue.PutStatus.JOINED_TASK) {
+            sendPublishedComicInformation(task, extra)
+        }
     }
 
     bot.registerCommand(
@@ -1142,6 +1177,7 @@ fun main() = runBlocking {
                         },
                     )
                 } finally {
+                    comicInformationPreviews.remove(task)
                     queue.completeSealed(task)
                 }
             }

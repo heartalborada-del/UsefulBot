@@ -40,12 +40,11 @@ class ConfigDataTest {
         assertFalse(config.bot.telegram.blurImages)
         assertEquals("telegram-token", config.bot.telegram.token)
         assertEquals("https://api.telegram.org", config.bot.telegram.apiBaseUrl)
+        assertEquals(60L, config.bot.telegram.uploadTimeoutMinutes)
         assertEquals(false, config.bot.telegram.enableInlineMode)
         assertEquals(LargeFilePolicy.SPLIT_PDF, config.bot.telegram.largeFile.policy)
         assertEquals(48, config.bot.telegram.largeFile.maxPartSizeMiB)
         assertEquals("data/telegram/temp", config.bot.telegram.largeFile.tempDirectory)
-        assertTrue(config.bot.telegram.telegraphPreview.enabled)
-        assertEquals("UsefulBot", config.bot.telegram.telegraphPreview.authorName)
         assertEquals(0L, config.eHentai.maxArchiveSizeMiB)
         assertEquals(8, config.jmComic.imageParallelCount)
         assertEquals("https://jm365.work/3YeBdF", config.jmComic.redirectUrl)
@@ -198,26 +197,36 @@ class ConfigDataTest {
     }
 
     @Test
-    fun `version four config gains Telegram Telegraph preview settings`() {
-        val configFile = Files.createTempFile("useful-bot-v4-config-", ".json").toFile()
+    fun `version seven config removes Telegraph fallback settings`() {
+        val configFile = Files.createTempFile("useful-bot-v7-config-", ".json").toFile()
         try {
             configFile.writeText(
-                """{"version":4,"Bot":{"telegram":{"Enabled":true,"Token":"token"}}}"""
+                """
+                    {
+                      "version": 7,
+                      "Bot": {
+                        "telegram": {
+                          "Enabled": true,
+                          "Token": "token",
+                          "LargeFile": {"Policy": "TELEGRAPH"},
+                          "TelegraphPreview": {
+                            "Enabled": true,
+                            "AccessToken": "obsolete-token"
+                          }
+                        }
+                      }
+                    }
+                """.trimIndent()
             )
 
             val config = Config(configFile).getConfig()
 
             assertEquals(ConfigData.CURRENT_VERSION, config.version)
-            assertTrue(config.bot.telegram.telegraphPreview.enabled)
-            assertEquals("", config.bot.telegram.telegraphPreview.accessToken)
+            assertEquals(LargeFilePolicy.SPLIT_PDF, config.bot.telegram.largeFile.policy)
             val upgraded = JsonParser.parseString(configFile.readText()).asJsonObject
-            assertTrue(
-                upgraded.getAsJsonObject("Bot")
-                    .getAsJsonObject("telegram")
-                    .getAsJsonObject("TelegraphPreview")
-                    .get("Enabled")
-                    .asBoolean
-            )
+            val telegram = upgraded.getAsJsonObject("Bot").getAsJsonObject("telegram")
+            assertFalse(telegram.has("TelegraphPreview"))
+            assertEquals("SPLIT_PDF", telegram.getAsJsonObject("LargeFile").get("Policy").asString)
         } finally {
             configFile.delete()
         }
