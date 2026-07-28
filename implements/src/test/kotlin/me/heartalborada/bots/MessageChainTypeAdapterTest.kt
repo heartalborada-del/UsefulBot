@@ -4,6 +4,7 @@ import com.google.gson.GsonBuilder
 import me.heartalborada.commons.bots.File
 import me.heartalborada.commons.bots.Image
 import me.heartalborada.commons.bots.Location
+import me.heartalborada.commons.bots.Markdown
 import me.heartalborada.commons.bots.MessageChain
 import me.heartalborada.commons.bots.Share
 import kotlin.test.Test
@@ -61,6 +62,47 @@ class MessageChainTypeAdapterTest {
         val location = chain[2] as Location
         assertNull(location.title)
         assertNull(location.content)
+    }
+
+    @Test
+    fun `markdown segment renders plain text`() {
+        val content = """
+            [](%7B%22version%22%3A2%7D)
+            [@someone](mqqapi://markdown/mention?at_type=1&at_tinyid=1194929728)
+             **message** with `code`
+            ![image #120px #120px](https://example.test/image.png)
+
+            ##### title
+
+            > quoted _text_
+        """.trimIndent()
+        val json = """[{"type":"markdown","data":{"content":${gson.toJson(content)}}}]"""
+
+        val chain = parse(json)
+        val markdown = chain.single() as Markdown
+
+        assertEquals(content, markdown.content)
+        assertEquals(
+            """
+                @someone
+                 message with code
+                [Image]
+
+                title
+
+                quoted text
+            """.trimIndent(),
+            markdown.toString()
+        )
+    }
+
+    @Test
+    fun `markdown segment is silently omitted when sending through NapCat`() {
+        val chain = MessageChain().apply {
+            add(Markdown("**message**"))
+        }
+
+        assertEquals("[]", gson.toJson(chain, MessageChain::class.java))
     }
 
     private fun parse(json: String): MessageChain =

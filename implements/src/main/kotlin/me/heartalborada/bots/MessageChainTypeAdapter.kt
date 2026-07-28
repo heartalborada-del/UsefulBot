@@ -15,6 +15,7 @@ class MessageChainTypeAdapter : TypeAdapter<MessageChain>() {
         writer.beginArray()
         var isFirst = true
         chain.forEach {
+            if (it is Markdown || it is File) return@forEach
             writer.beginObject()
             when (it) {
                 is PlainText -> {
@@ -48,16 +49,6 @@ class MessageChainTypeAdapter : TypeAdapter<MessageChain>() {
                     writer.name("url").value(it.info.url)
                     writer.endObject()
                 }
-                //don't parse it
-                /*is File -> {
-                    if (it.info.url != null) {
-                        writer.name("type").value("file")
-                        writer.name("data")
-                        writer.beginObject()
-                        writer.name("file").value(it.info.url)
-                        writer.endObject()
-                    }
-                }*/
 
                 is Face -> {
                     writer.name("type").value("face")
@@ -134,6 +125,7 @@ class MessageChainTypeAdapter : TypeAdapter<MessageChain>() {
                     writer.name("data").value(it.data)
                     writer.endObject()
                 }
+
             }
             isFirst = false
             writer.endObject()
@@ -223,6 +215,7 @@ class MessageChainTypeAdapter : TypeAdapter<MessageChain>() {
 
                 "xml" -> chain.add(Xml(data!!.getAsJsonPrimitive("data").asString))
                 "json" -> chain.add(Json(data!!.getAsJsonPrimitive("data").asString))
+                "markdown" -> chain.add(Markdown(data!!.getAsJsonPrimitive("content").asString))
                 else -> chain.add(Unknown(Gson().toJson(data)))
             }
             reader.endObject()

@@ -489,7 +489,7 @@ class Napcat(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            logger.trace("[Event] $text")
+            logger.debug("[Event] $text")
             try {
                 val root = JsonParser.parseString(text).asJsonObject
                 val ts = root.getAsJsonPrimitive("time").asLong
