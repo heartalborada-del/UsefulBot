@@ -1,7 +1,17 @@
 package me.heartalborada.bots.telegram
 
-import java.sql.Connection
-import javax.sql.DataSource
+import org.jetbrains.exposed.sql.Database
+import org.jetbrains.exposed.sql.ResultRow
+import org.jetbrains.exposed.sql.SchemaUtils
+import org.jetbrains.exposed.sql.SortOrder
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.Table
+import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.batchInsert
+import org.jetbrains.exposed.sql.deleteWhere
+import org.jetbrains.exposed.sql.selectAll
+import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.sql.update
 
 data class CachedTelegramPdfPart(
     val index: Int,
@@ -14,30 +24,27 @@ data class CachedTelegramPdfPart(
     val fileSize: Long,
 )
 
-class TelegramFileIdCache(private val dataSource: DataSource) {
+private object TelegramPdfPartCacheTable : Table("telegram_pdf_part_cache") {
+    val botId = long("bot_id")
+    val contentSha256 = varchar("content_sha256", 64)
+    val maximumPartBytes = long("maximum_part_bytes")
+    val partIndex = integer("part_index")
+    val partCount = integer("part_count")
+    val startPage = integer("start_page")
+    val endPage = integer("end_page")
+    val fileName = varchar("file_name", 512)
+    val fileId = varchar("file_id", 1024)
+    val fileUniqueId = varchar("file_unique_id", 1024).nullable()
+    val fileSize = long("file_size")
+    val updatedAt = long("updated_at")
+
+    override val primaryKey = PrimaryKey(botId, contentSha256, maximumPartBytes, partIndex)
+}
+
+class TelegramFileIdCache(private val database: Database) {
     init {
-        dataSource.connection.use { connection ->
-            connection.createStatement().use { statement ->
-                statement.execute(
-                    """
-                        CREATE TABLE IF NOT EXISTS telegram_pdf_part_cache (
-                            bot_id BIGINT NOT NULL,
-                            content_sha256 VARCHAR(64) NOT NULL,
-                            maximum_part_bytes BIGINT NOT NULL,
-                            part_index INT NOT NULL,
-                            part_count INT NOT NULL,
-                            start_page INT NOT NULL,
-                            end_page INT NOT NULL,
-                            file_name VARCHAR(512) NOT NULL,
-                            file_id VARCHAR(1024) NOT NULL,
-                            file_unique_id VARCHAR(1024),
-                            file_size BIGINT NOT NULL,
-                            updated_at BIGINT NOT NULL,
-                            PRIMARY KEY (bot_id, content_sha256, maximum_part_bytes, part_index)
-                        )
-                    """.trimIndent()
-                )
-            }
+        transaction(database) {
+            SchemaUtils.create(TelegramPdfPartCacheTable)
         }
     }
 
@@ -46,38 +53,16 @@ class TelegramFileIdCache(private val dataSource: DataSource) {
         contentSha256: String,
         maximumPartBytes: Long,
     ): List<CachedTelegramPdfPart> {
-        val parts = dataSource.connection.use { connection ->
-            connection.prepareStatement(
-                """
-                    SELECT part_index, part_count, start_page, end_page, file_name,
-                           file_id, file_unique_id, file_size
-                    FROM telegram_pdf_part_cache
-                    WHERE bot_id = ? AND content_sha256 = ? AND maximum_part_bytes = ?
-                    ORDER BY part_index
-                """.trimIndent()
-            ).use { statement ->
-                statement.setLong(1, botId)
-                statement.setString(2, contentSha256)
-                statement.setLong(3, maximumPartBytes)
-                statement.executeQuery().use { result ->
-                    buildList {
-                        while (result.next()) {
-                            add(
-                                CachedTelegramPdfPart(
-                                    index = result.getInt("part_index"),
-                                    partCount = result.getInt("part_count"),
-                                    startPage = result.getInt("start_page"),
-                                    endPage = result.getInt("end_page"),
-                                    fileName = result.getString("file_name"),
-                                    fileId = result.getString("file_id"),
-                                    fileUniqueId = result.getString("file_unique_id"),
-                                    fileSize = result.getLong("file_size"),
-                                )
-                            )
-                        }
-                    }
+        val parts = transaction(database) {
+            TelegramPdfPartCacheTable
+                .selectAll()
+                .where {
+                    (TelegramPdfPartCacheTable.botId eq botId) and
+                        (TelegramPdfPartCacheTable.contentSha256 eq contentSha256) and
+                        (TelegramPdfPartCacheTable.maximumPartBytes eq maximumPartBytes)
                 }
-            }
+                .orderBy(TelegramPdfPartCacheTable.partIndex to SortOrder.ASC)
+                .map(::toCachedPart)
         }
         val expectedCount = parts.firstOrNull()?.partCount ?: return emptyList()
         return parts.takeIf { candidate ->
@@ -100,35 +85,22 @@ class TelegramFileIdCache(private val dataSource: DataSource) {
         require(parts.all { it.partCount == parts.size }) {
             "Telegram PDF part count must match the number of cached parts."
         }
-        dataSource.connection.use { connection ->
-            connection.inTransaction {
-                delete(connection, botId, contentSha256, maximumPartBytes)
-                connection.prepareStatement(
-                    """
-                        INSERT INTO telegram_pdf_part_cache (
-                            bot_id, content_sha256, maximum_part_bytes, part_index, part_count,
-                            start_page, end_page, file_name, file_id, file_unique_id, file_size, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """.trimIndent()
-                ).use { statement ->
-                    val now = System.currentTimeMillis()
-                    parts.forEach { part ->
-                        statement.setLong(1, botId)
-                        statement.setString(2, contentSha256)
-                        statement.setLong(3, maximumPartBytes)
-                        statement.setInt(4, part.index)
-                        statement.setInt(5, part.partCount)
-                        statement.setInt(6, part.startPage)
-                        statement.setInt(7, part.endPage)
-                        statement.setString(8, part.fileName)
-                        statement.setString(9, part.fileId)
-                        statement.setString(10, part.fileUniqueId)
-                        statement.setLong(11, part.fileSize)
-                        statement.setLong(12, now)
-                        statement.addBatch()
-                    }
-                    statement.executeBatch()
-                }
+        transaction(database) {
+            delete(botId, contentSha256, maximumPartBytes)
+            val now = System.currentTimeMillis()
+            TelegramPdfPartCacheTable.batchInsert(parts) { part ->
+                this[TelegramPdfPartCacheTable.botId] = botId
+                this[TelegramPdfPartCacheTable.contentSha256] = contentSha256
+                this[TelegramPdfPartCacheTable.maximumPartBytes] = maximumPartBytes
+                this[TelegramPdfPartCacheTable.partIndex] = part.index
+                this[TelegramPdfPartCacheTable.partCount] = part.partCount
+                this[TelegramPdfPartCacheTable.startPage] = part.startPage
+                this[TelegramPdfPartCacheTable.endPage] = part.endPage
+                this[TelegramPdfPartCacheTable.fileName] = part.fileName
+                this[TelegramPdfPartCacheTable.fileId] = part.fileId
+                this[TelegramPdfPartCacheTable.fileUniqueId] = part.fileUniqueId
+                this[TelegramPdfPartCacheTable.fileSize] = part.fileSize
+                this[TelegramPdfPartCacheTable.updatedAt] = now
             }
         }
     }
@@ -142,65 +114,46 @@ class TelegramFileIdCache(private val dataSource: DataSource) {
         fileUniqueId: String?,
         fileSize: Long,
     ) {
-        dataSource.connection.use { connection ->
-            connection.prepareStatement(
-                """
-                    UPDATE telegram_pdf_part_cache
-                    SET file_id = ?, file_unique_id = ?, file_size = ?, updated_at = ?
-                    WHERE bot_id = ? AND content_sha256 = ?
-                      AND maximum_part_bytes = ? AND part_index = ?
-                """.trimIndent()
-            ).use { statement ->
-                statement.setString(1, fileId)
-                statement.setString(2, fileUniqueId)
-                statement.setLong(3, fileSize)
-                statement.setLong(4, System.currentTimeMillis())
-                statement.setLong(5, botId)
-                statement.setString(6, contentSha256)
-                statement.setLong(7, maximumPartBytes)
-                statement.setInt(8, partIndex)
-                check(statement.executeUpdate() == 1) {
-                    "Telegram PDF part $partIndex was not present in the file ID cache."
-                }
+        val updatedRows = transaction(database) {
+            TelegramPdfPartCacheTable.update({
+                (TelegramPdfPartCacheTable.botId eq botId) and
+                    (TelegramPdfPartCacheTable.contentSha256 eq contentSha256) and
+                    (TelegramPdfPartCacheTable.maximumPartBytes eq maximumPartBytes) and
+                    (TelegramPdfPartCacheTable.partIndex eq partIndex)
+            }) {
+                it[TelegramPdfPartCacheTable.fileId] = fileId
+                it[TelegramPdfPartCacheTable.fileUniqueId] = fileUniqueId
+                it[TelegramPdfPartCacheTable.fileSize] = fileSize
+                it[TelegramPdfPartCacheTable.updatedAt] = System.currentTimeMillis()
             }
+        }
+        check(updatedRows == 1) {
+            "Telegram PDF part $partIndex was not present in the file ID cache."
         }
     }
 
     fun invalidate(botId: Long, contentSha256: String, maximumPartBytes: Long) {
-        dataSource.connection.use { connection ->
-            delete(connection, botId, contentSha256, maximumPartBytes)
+        transaction(database) {
+            delete(botId, contentSha256, maximumPartBytes)
         }
     }
 
-    private fun delete(
-        connection: Connection,
-        botId: Long,
-        contentSha256: String,
-        maximumPartBytes: Long,
-    ) {
-        connection.prepareStatement(
-            """
-                DELETE FROM telegram_pdf_part_cache
-                WHERE bot_id = ? AND content_sha256 = ? AND maximum_part_bytes = ?
-            """.trimIndent()
-        ).use { statement ->
-            statement.setLong(1, botId)
-            statement.setString(2, contentSha256)
-            statement.setLong(3, maximumPartBytes)
-            statement.executeUpdate()
+    private fun delete(botId: Long, contentSha256: String, maximumPartBytes: Long) {
+        TelegramPdfPartCacheTable.deleteWhere {
+            (TelegramPdfPartCacheTable.botId eq botId) and
+                (TelegramPdfPartCacheTable.contentSha256 eq contentSha256) and
+                (TelegramPdfPartCacheTable.maximumPartBytes eq maximumPartBytes)
         }
     }
 
-    private inline fun <T> Connection.inTransaction(block: () -> T): T {
-        val previousAutoCommit = autoCommit
-        autoCommit = false
-        return try {
-            block().also { commit() }
-        } catch (exception: Exception) {
-            rollback()
-            throw exception
-        } finally {
-            autoCommit = previousAutoCommit
-        }
-    }
+    private fun toCachedPart(row: ResultRow) = CachedTelegramPdfPart(
+        index = row[TelegramPdfPartCacheTable.partIndex],
+        partCount = row[TelegramPdfPartCacheTable.partCount],
+        startPage = row[TelegramPdfPartCacheTable.startPage],
+        endPage = row[TelegramPdfPartCacheTable.endPage],
+        fileName = row[TelegramPdfPartCacheTable.fileName],
+        fileId = row[TelegramPdfPartCacheTable.fileId],
+        fileUniqueId = row[TelegramPdfPartCacheTable.fileUniqueId],
+        fileSize = row[TelegramPdfPartCacheTable.fileSize],
+    )
 }

@@ -19,6 +19,9 @@ data class QueueExtraData(
     val sender: MessageSender,
     val bot: AbstractBot,
     val blurImages: Boolean,
+    val adapter: String = bot::class.simpleName.orEmpty(),
+    val language: String = "",
+    val notifyProgress: Boolean = true,
 ) {
     private val comicInformationDelivery = RetryableDeliveryGate()
 

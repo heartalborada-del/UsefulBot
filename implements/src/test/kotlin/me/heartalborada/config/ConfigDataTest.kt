@@ -49,6 +49,13 @@ class ConfigDataTest {
         assertEquals(8, config.jmComic.imageParallelCount)
         assertEquals("https://jm365.work/3YeBdF", config.jmComic.redirectUrl)
         assertEquals("www.cdnhjk.net", config.jmComic.apiDomains.first())
+        assertEquals(20, config.access.commandsPerMinute)
+        assertEquals(20, config.access.dailyDownloadLimit)
+        assertEquals(5, config.tasks.userCapacity)
+        assertEquals(10_240L, config.cache.maxSizeMiB)
+        assertTrue(config.deliveryRetry.enabled)
+        assertFalse(config.batch.enabled)
+        assertEquals(10, config.batch.maxItems)
     }
 
     @Test
@@ -227,6 +234,31 @@ class ConfigDataTest {
             val telegram = upgraded.getAsJsonObject("Bot").getAsJsonObject("telegram")
             assertFalse(telegram.has("TelegraphPreview"))
             assertEquals("SPLIT_PDF", telegram.getAsJsonObject("LargeFile").get("Policy").asString)
+        } finally {
+            configFile.delete()
+        }
+    }
+
+    @Test
+    fun `version eight config gains operational settings`() {
+        val configFile = Files.createTempFile("useful-bot-v8-config-", ".json").toFile()
+        try {
+            configFile.writeText("""{"version":8,"ComicParallelCount":3}""")
+
+            val config = Config(configFile).getConfig()
+
+            assertEquals(ConfigData.CURRENT_VERSION, config.version)
+            assertEquals(5, config.tasks.userCapacity)
+            assertEquals(10_240L, config.cache.maxSizeMiB)
+            assertEquals(20, config.access.commandsPerMinute)
+            assertFalse(config.batch.enabled)
+            val upgraded = JsonParser.parseString(configFile.readText()).asJsonObject
+            assertTrue(upgraded.has("Access"))
+            assertTrue(upgraded.has("Tasks"))
+            assertTrue(upgraded.has("Cache"))
+            assertTrue(upgraded.has("DeliveryRetry"))
+            assertTrue(upgraded.has("Batch"))
+            assertFalse(upgraded.getAsJsonObject("Batch").get("Enabled").asBoolean)
         } finally {
             configFile.delete()
         }

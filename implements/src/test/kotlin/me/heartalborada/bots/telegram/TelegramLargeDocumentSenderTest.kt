@@ -4,6 +4,7 @@ import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.comic.PDFGenerator
 import me.heartalborada.commons.comic.SizeBoundedPdfSplitter
 import org.h2.jdbcx.JdbcConnectionPool
+import org.jetbrains.exposed.sql.Database
 import java.awt.image.BufferedImage
 import java.io.File
 import java.nio.file.Files
@@ -34,7 +35,7 @@ class TelegramLargeDocumentSenderTest {
             val client = FakeTelegramDocumentClient()
             val sender = TelegramLargeDocumentSender(
                 client = client,
-                cache = TelegramFileIdCache(pool),
+                cache = TelegramFileIdCache(Database.connect(pool)),
                 splitter = splitter,
                 tempDirectory = directory.resolve("parts"),
                 maximumPartBytes = maximumBytes,
@@ -74,7 +75,7 @@ class TelegramLargeDocumentSenderTest {
             val client = FakeTelegramDocumentClient()
             val sender = TelegramLargeDocumentSender(
                 client = client,
-                cache = TelegramFileIdCache(pool),
+                cache = TelegramFileIdCache(Database.connect(pool)),
                 splitter = splitter,
                 tempDirectory = directory.resolve("parts"),
                 maximumPartBytes = maximumBytes,
@@ -114,7 +115,7 @@ class TelegramLargeDocumentSenderTest {
             val client = FakeTelegramDocumentClient()
             val sender = TelegramLargeDocumentSender(
                 client = client,
-                cache = TelegramFileIdCache(pool),
+                cache = TelegramFileIdCache(Database.connect(pool)),
                 splitter = splitter,
                 tempDirectory = directory.resolve("parts"),
                 maximumPartBytes = maximumBytes,

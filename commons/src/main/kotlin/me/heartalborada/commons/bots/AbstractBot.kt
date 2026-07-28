@@ -11,6 +11,8 @@ import me.heartalborada.commons.bots.events.EventBus
 import me.heartalborada.commons.bots.events.message.GroupMessageEvent
 import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
 import me.heartalborada.commons.commands.CommandExecutor
+import me.heartalborada.commons.commands.CommandErrorHandler
+import me.heartalborada.commons.commands.CommandGuard
 import me.heartalborada.commons.commands.SubcommandBuilder
 import me.heartalborada.commons.i18n.Translator
 import org.slf4j.Logger
@@ -49,6 +51,8 @@ abstract class AbstractBot(
 
     private val commandMap = linkedMapOf<String, CommandDefinition>()
     private val beforeCommandExecutors = mutableListOf<CommandExecutor>()
+    private val commandGuards = mutableListOf<CommandGuard>()
+    private var commandErrorHandler: CommandErrorHandler? = null
     private var isRegistered: Boolean = false
 
     init {
@@ -69,6 +73,8 @@ abstract class AbstractBot(
         commonScope.cancel()
         commandMap.clear()
         beforeCommandExecutors.clear()
+        commandGuards.clear()
+        commandErrorHandler = null
         return true
     }
 
@@ -143,6 +149,22 @@ abstract class AbstractBot(
      */
     fun beforeCommandExecution(executor: CommandExecutor) {
         beforeCommandExecutors += executor
+    }
+
+    fun guardCommands(guard: CommandGuard) {
+        commandGuards += guard
+    }
+
+    fun onCommandError(handler: CommandErrorHandler) {
+        commandErrorHandler = handler
+    }
+
+    fun registeredCommands(): List<BotCommand> {
+        val seen = mutableSetOf<CommandDefinition>()
+        return commandMap.mapNotNull { (name, definition) ->
+            if (!seen.add(definition)) return@mapNotNull null
+            BotCommand(name, definition.usage)
+        }
     }
 
     fun registerCommand(
@@ -288,6 +310,9 @@ abstract class AbstractBot(
 
         commonScope.launch {
             try {
+                if (commandGuards.any { !it.allow(sender, execution.command, execution.arguments, messageID) }) {
+                    return@launch
+                }
                 beforeCommandExecutors.forEach {
                     it.execute(sender, execution.command, execution.arguments, messageID)
                 }
@@ -303,11 +328,13 @@ abstract class AbstractBot(
                     sender.target,
                     exception
                 )
-                reply(
-                    sender,
-                    messageID,
-                    translator.translate("command.execution_failed")
-                )
+                val operation = messageChain.toString().trim()
+                val response = commandErrorHandler?.let { handler ->
+                    runCatching { handler.handle(sender, operation, messageID, exception) }
+                        .onFailure { logger.error("Failed to persist command error report.", it) }
+                        .getOrNull()
+                } ?: translator.translate("command.execution_failed")
+                reply(sender, messageID, response)
             }
         }
         return true
@@ -318,6 +345,8 @@ abstract class AbstractBot(
         val command: String,
         val arguments: MessageChain,
     )
+
+    data class BotCommand(val name: String, val description: String)
 
     private fun resolveSubcommand(
         route: CommandRoute.Branch,

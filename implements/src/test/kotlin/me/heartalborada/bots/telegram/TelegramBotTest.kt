@@ -3,6 +3,8 @@ package me.heartalborada.bots.telegram
 import com.google.gson.JsonParser
 import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.At
+import me.heartalborada.commons.bots.ActionButton
+import me.heartalborada.commons.bots.ActionKeyboard
 import me.heartalborada.commons.bots.Image
 import me.heartalborada.commons.bots.MessageChain
 import me.heartalborada.commons.bots.PlainText
@@ -20,6 +22,7 @@ import okio.Buffer
 import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -29,6 +32,54 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class TelegramBotTest {
+    @Test
+    fun `connect automatically registers the current Telegram command menu`() {
+        val methods = CopyOnWriteArrayList<String>()
+        val commandRequest = CompletableFuture<String>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val method = chain.request().url.pathSegments.last()
+                methods += method
+                val body = Buffer().also { chain.request().body!!.writeTo(it) }.readUtf8()
+                val result = when (method) {
+                    "getMe" -> """{"id":1,"username":"UsefulBot"}"""
+                    "setMyCommands" -> {
+                        commandRequest.complete(body)
+                        "true"
+                    }
+                    "getUpdates" -> "[]"
+                    else -> error("Unexpected Telegram method: $method")
+                }
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body("""{"ok":true,"result":$result}""".toResponseBody("application/json".toMediaType()))
+                    .build()
+            }
+            .build()
+        val bot = TelegramBot(
+            token = "test-token",
+            apiBaseUrl = "https://telegram.test",
+            parentClient = client,
+            autoConnect = false,
+        )
+        bot.registerCommand("tasks", "t", usage = "Show\n current tasks.") { _, _, _, _ -> }
+
+        try {
+            assertTrue(bot.connect())
+            val request = JsonParser.parseString(commandRequest.get(2, TimeUnit.SECONDS)).asJsonObject
+            val commands = request.getAsJsonArray("commands").map { it.asJsonObject }
+            assertEquals(listOf("help", "tasks"), commands.map { it["command"].asString })
+            assertEquals("Show current tasks.", commands.last()["description"].asString)
+            assertTrue("getMe" in methods)
+            assertTrue("setMyCommands" in methods)
+        } finally {
+            bot.close()
+        }
+    }
+
     @Test
     fun `normalizes commands addressed to this bot`() {
         assertEquals("/help get", normalizeTelegramCommand("/help@UsefulBot get", "usefulbot"))
@@ -99,6 +150,7 @@ class TelegramBotTest {
                     content = MessageChain().apply {
                         add(Reply(99L))
                         add(PlainText(text))
+                        add(ActionKeyboard(listOf(listOf(ActionButton("Download", "/get eh item")))))
                     },
                 )
             }
@@ -111,6 +163,10 @@ class TelegramBotTest {
             assertEquals("\\#${index + 1}\n获取：`/get eh ${if (index == 0) "first" else "second"}`", json["text"].asString)
             assertEquals("MarkdownV2", json["parse_mode"].asString)
             assertEquals(99L, json.getAsJsonObject("reply_parameters")["message_id"].asLong)
+            val button = json.getAsJsonObject("reply_markup")
+                .getAsJsonArray("inline_keyboard")[0].asJsonArray[0].asJsonObject
+            assertEquals("Download", button["text"].asString)
+            assertEquals("/get eh item", button["callback_data"].asString)
         }
         bot.close()
     }
@@ -162,6 +218,50 @@ class TelegramBotTest {
         assertEquals("query-1", inline.queryID)
         assertEquals("eh language:chinese", inline.query)
         assertEquals("2", inline.offset)
+        bot.close()
+    }
+
+    @Test
+    fun `maps action button callbacks back into command events`() {
+        val methods = mutableListOf<String>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                methods += chain.request().url.pathSegments.last()
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body("""{"ok":true,"result":true}""".toResponseBody("application/json".toMediaType()))
+                    .build()
+            }
+            .build()
+        val bot = TelegramBot(
+            token = "test-token",
+            apiBaseUrl = "https://telegram.test",
+            parentClient = client,
+            autoConnect = false,
+        )
+        val event = CompletableFuture<PrivateMessageEvent>()
+        bot.getEventBus().register(PrivateMessageEvent::class.java, event::complete)
+
+        bot.handleUpdate(
+            JsonParser.parseString(
+                """
+                    {
+                      "callback_query":{
+                        "id":"callback-1",
+                        "from":{"id":42,"is_bot":false,"first_name":"Alice"},
+                        "data":"/get jm JM123",
+                        "message":{"message_id":9,"date":1700000000,"chat":{"id":42,"type":"private"}}
+                      }
+                    }
+                """.trimIndent()
+            ).asJsonObject
+        )
+
+        assertEquals("/get jm JM123", event.get(2, TimeUnit.SECONDS).message.toString())
+        assertEquals(listOf("answerCallbackQuery"), methods)
         bot.close()
     }
 

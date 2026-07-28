@@ -8,6 +8,7 @@ import me.heartalborada.commons.bots.dto.UserInfo
 import me.heartalborada.commons.bots.events.EventBus
 import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
 import me.heartalborada.commons.commands.CommandExecutor
+import me.heartalborada.commons.commands.CommandErrorHandler
 import me.heartalborada.commons.i18n.Translator
 import java.io.File
 import java.util.concurrent.CompletableFuture
@@ -166,6 +167,37 @@ class AbstractBotCommandTest {
 
         completed.get(2, TimeUnit.SECONDS)
         assertEquals(listOf("before:run", "command:run"), calls)
+    }
+
+    @Test
+    fun `exposes canonical command metadata without aliases`() {
+        val bot = FakeBot()
+        bot.registerCommand("echo", "e", usage = "Echo input.") { _, _, _, _ -> }
+
+        val commands = bot.registeredCommands()
+
+        assertEquals(listOf("help", "echo"), commands.map { it.name })
+        assertEquals("Echo input.", commands.last().description)
+    }
+
+    @Test
+    fun `command error handlers receive the full operation and control the safe reply`() {
+        val bot = FakeBot()
+        val captured = CompletableFuture<Pair<String, Throwable>>()
+        bot.onCommandError(CommandErrorHandler { _, operation, _, error ->
+            captured.complete(operation to error)
+            "Report error/test.err.log to the administrator."
+        })
+        bot.registerCommand("fail", usage = "Fail.") { _, _, _, _ -> error("root cause") }
+        bot.connect()
+
+        bot.broadcast("/fail input", messageID = 18L)
+
+        val (operation, error) = captured.get(2, TimeUnit.SECONDS)
+        assertEquals("/fail input", operation)
+        assertEquals("root cause", error.message)
+        val reply = bot.sent.poll(2, TimeUnit.SECONDS)
+        assertTrue((reply[1] as PlainText).text.contains("error/test.err.log"))
     }
 
     private fun executor(

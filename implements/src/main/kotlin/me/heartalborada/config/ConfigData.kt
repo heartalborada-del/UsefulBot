@@ -9,7 +9,44 @@ data class ConfigData @JvmOverloads constructor(
     @SerializedName("Ehentai") val eHentai: EHentai = EHentai(),
     @SerializedName("JMComic") val jmComic: JMComic = JMComic(),
     @SerializedName("ComicParallelCount") val comicParallelCount: Int = 2,
+    @SerializedName("Access") val access: Access = Access(),
+    @SerializedName("Tasks") val tasks: Tasks = Tasks(),
+    @SerializedName("Cache") val cache: Cache = Cache(),
+    @SerializedName("DeliveryRetry") val deliveryRetry: DeliveryRetry = DeliveryRetry(),
+    @SerializedName("Batch") val batch: Batch = Batch(),
 ) {
+    data class Access @JvmOverloads constructor(
+        @SerializedName("AdminUserIds") val adminUserIds: List<Long> = emptyList(),
+        @SerializedName("AllowedUserIds") val allowedUserIds: List<Long> = emptyList(),
+        @SerializedName("AllowedChatIds") val allowedChatIds: List<Long> = emptyList(),
+        @SerializedName("BlockedUserIds") val blockedUserIds: List<Long> = emptyList(),
+        @SerializedName("CommandsPerMinute") val commandsPerMinute: Int = 20,
+        @SerializedName("DailyDownloadLimit") val dailyDownloadLimit: Int = 20,
+    )
+
+    data class Tasks @JvmOverloads constructor(
+        @SerializedName("UserCapacity") val userCapacity: Int = 5,
+        @SerializedName("StateFile") val stateFile: String = "data/bot-state.json",
+    )
+
+    data class Cache @JvmOverloads constructor(
+        @SerializedName("MaxSizeMiB") val maxSizeMiB: Long = 10_240,
+        @SerializedName("TtlDays") val ttlDays: Long = 30,
+        @SerializedName("CleanupIntervalMinutes") val cleanupIntervalMinutes: Long = 60,
+        @SerializedName("MinimumFreeSpaceMiB") val minimumFreeSpaceMiB: Long = 1_024,
+    )
+
+    data class DeliveryRetry @JvmOverloads constructor(
+        @SerializedName("Enabled") val enabled: Boolean = true,
+        @SerializedName("IntervalSeconds") val intervalSeconds: Long = 60,
+        @SerializedName("MaxAttempts") val maxAttempts: Int = 10,
+    )
+
+    data class Batch @JvmOverloads constructor(
+        @SerializedName("Enabled") val enabled: Boolean = false,
+        @SerializedName("MaxItems") val maxItems: Int = 10,
+    )
+
     data class Bot @JvmOverloads constructor(
         @SerializedName("CommandOperator") val commandOperator: Char = '/',
         @SerializedName("IsCommandStartWithAt") val isCommandStartWithAt: Boolean = false,
@@ -86,7 +123,7 @@ data class ConfigData @JvmOverloads constructor(
     )
 
     companion object {
-        const val CURRENT_VERSION = 8
+        const val CURRENT_VERSION = 9
     }
 }
 

@@ -16,6 +16,7 @@ import kotlinx.coroutines.launch
 import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.AbstractBot
 import me.heartalborada.commons.bots.AbstractMessageObject
+import me.heartalborada.commons.bots.ActionKeyboard
 import me.heartalborada.commons.bots.At
 import me.heartalborada.commons.bots.AtAll
 import me.heartalborada.commons.bots.File as FileMessage
@@ -102,6 +103,8 @@ class TelegramBot(
             val me = call("getMe").asJsonObject
             botID = me["id"].asLong
             botUsername = me.get("username")?.asString.orEmpty()
+            runCatching(::synchronizeCommands)
+                .onFailure { logger.warn("Failed to register Telegram bot commands; polling will continue.", it) }
             pollingScope.launch { pollUpdates() }
             true
         } catch (exception: Exception) {
@@ -126,13 +129,14 @@ class TelegramBot(
         val text = renderTelegramText(message)
         val image = message.filterIsInstance<Image>().firstOrNull()
         val file = message.filterIsInstance<FileMessage>().firstOrNull()
+        val keyboard = message.filterIsInstance<ActionKeyboard>().firstOrNull()
         return when {
             image != null -> sendPhoto(id, image, text, replyTo)
             file != null -> {
                 val url = file.info.url ?: throw IllegalArgumentException("Telegram file message requires a URL.")
                 sendDocument(id, file.info.name, url, text.takeIf(String::isNotBlank), replyTo)
             }
-            else -> sendText(id, text, replyTo)
+            else -> sendText(id, text, replyTo, keyboard = keyboard)
         }
     }
 
@@ -157,6 +161,7 @@ class TelegramBot(
                                 text = text,
                                 replyTo = replyTo,
                                 markdownV2 = true,
+                                keyboard = node.content.filterIsInstance<ActionKeyboard>().firstOrNull(),
                             )
                         }
                     }
@@ -211,6 +216,28 @@ class TelegramBot(
             nextOffset?.let { addProperty("next_offset", it.take(64)) }
         }
         return call("answerInlineQuery", params).asBoolean
+    }
+
+    internal fun synchronizeCommands(): Boolean {
+        val commands = registeredCommands()
+            .asSequence()
+            .filter { TELEGRAM_COMMAND_NAME.matches(it.name) }
+            .take(MAX_BOT_COMMANDS)
+            .toList()
+        val params = JsonObject().apply {
+            add("commands", JsonArray().apply {
+                commands.forEach { command ->
+                    add(JsonObject().apply {
+                        addProperty("command", command.name)
+                        addProperty(
+                            "description",
+                            command.description.replace(WHITESPACE, " ").trim().take(MAX_COMMAND_DESCRIPTION_LENGTH),
+                        )
+                    })
+                }
+            })
+        }
+        return call("setMyCommands", params).asBoolean
     }
 
     override fun recallMessage(messageID: Long): Boolean {
@@ -279,6 +306,7 @@ class TelegramBot(
 
     internal fun handleUpdate(update: JsonObject) {
         update.getAsJsonObject("message")?.let(::handleMessage)
+        update.getAsJsonObject("callback_query")?.let(::handleCallbackQuery)
         if (inlineModeEnabled) {
             update.getAsJsonObject("inline_query")?.let(::handleInlineQuery)
         }
@@ -293,6 +321,7 @@ class TelegramBot(
                     addProperty("timeout", POLL_TIMEOUT_SECONDS)
                     add("allowed_updates", JsonArray().apply {
                         add("message")
+                        add("callback_query")
                         if (inlineModeEnabled) add("inline_query")
                     })
                 }
@@ -359,6 +388,19 @@ class TelegramBot(
         )
     }
 
+    private fun handleCallbackQuery(callback: JsonObject) {
+        val callbackID = callback.get("id")?.asString ?: return
+        val command = callback.get("data")?.asString ?: return
+        val message = callback.getAsJsonObject("message") ?: return
+        val from = callback.getAsJsonObject("from") ?: return
+        call("answerCallbackQuery", JsonObject().apply { addProperty("callback_query_id", callbackID) })
+        val synthetic = message.deepCopy().apply {
+            addProperty("text", command)
+            add("from", from)
+        }
+        handleMessage(synthetic)
+    }
+
     private fun JsonObject.toUserInfo(): UserInfo {
         val displayName = listOfNotNull(
             get("first_name")?.asString,
@@ -378,6 +420,7 @@ class TelegramBot(
         text: String,
         replyTo: Long? = null,
         markdownV2: Boolean = false,
+        keyboard: ActionKeyboard? = null,
     ): Long {
         require(text.isNotBlank()) { "Telegram message text must not be blank." }
         var firstMessageID: Long? = null
@@ -388,6 +431,7 @@ class TelegramBot(
                 addProperty("text", chunk)
                 if (markdownV2) addProperty("parse_mode", "MarkdownV2")
                 if (index == 0) addReplyParameters(replyTo)
+                if (index == 0 && keyboard != null) add("reply_markup", keyboard.toTelegramMarkup())
             }
             val messageID = rememberMessage(call("sendMessage", params).asJsonObject)
             if (firstMessageID == null) firstMessageID = messageID
@@ -539,6 +583,24 @@ class TelegramBot(
         }
     }
 
+    private fun ActionKeyboard.toTelegramMarkup(): JsonObject = JsonObject().apply {
+        add("inline_keyboard", JsonArray().apply {
+            rows.forEach { row ->
+                add(JsonArray().apply {
+                    row.forEach { button ->
+                        require(button.command.toByteArray(Charsets.UTF_8).size <= MAX_CALLBACK_DATA_BYTES) {
+                            "Telegram callback command exceeds $MAX_CALLBACK_DATA_BYTES bytes."
+                        }
+                        add(JsonObject().apply {
+                            addProperty("text", button.label)
+                            addProperty("callback_data", button.command)
+                        })
+                    }
+                })
+            }
+        })
+    }
+
     private fun rememberMessage(message: JsonObject): Long {
         val messageID = message["message_id"].asLong
         val chatID = message.getAsJsonObject("chat")["id"].asLong
@@ -581,10 +643,15 @@ class TelegramBot(
         const val MAX_INLINE_RESULTS = 50
         const val MAX_INLINE_TITLE_LENGTH = 256
         const val MAX_INLINE_DESCRIPTION_LENGTH = 512
+        const val MAX_BOT_COMMANDS = 100
+        const val MAX_COMMAND_DESCRIPTION_LENGTH = 256
+        const val MAX_CALLBACK_DATA_BYTES = 64
         const val CHAT_SEND_LOCK_COUNT = 64
         const val OFFICIAL_MAX_UPLOAD_BYTES = 50L * 1024 * 1024
         const val DEFAULT_UPLOAD_TIMEOUT_MINUTES = 60L
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+        val TELEGRAM_COMMAND_NAME = Regex("[a-z0-9_]{1,32}")
+        val WHITESPACE = Regex("\\s+")
     }
 }
 
@@ -654,7 +721,7 @@ internal fun normalizeTelegramCommand(
 
 internal fun renderTelegramText(message: MessageChain): String =
     message.asSequence()
-        .filterNot { it is Reply || it is Image || it is FileMessage }
+        .filterNot { it is Reply || it is Image || it is FileMessage || it is ActionKeyboard }
         .joinToString(separator = "") { item: AbstractMessageObject ->
             when (item) {
                 is PlainText -> item.text

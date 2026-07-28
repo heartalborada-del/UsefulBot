@@ -110,6 +110,14 @@ class MessageChainTypeAdapter : TypeAdapter<MessageChain>() {
                     writer.endObject()
                 }
 
+                is ActionKeyboard -> {
+                    writer.name("type").value("text")
+                    writer.name("data")
+                    writer.beginObject()
+                    writer.name("text").value(it.toString())
+                    writer.endObject()
+                }
+
                 is Xml -> {
                     writer.name("type").value("xml")
                     writer.name("data")

@@ -88,6 +88,7 @@ internal object ConfigMigration {
                 5 -> Unit
                 6 -> Unit
                 7 -> migrateV7ToV8(root)
+                8 -> Unit
                 else -> error("No config migration is available for version $version.")
             }
             version++

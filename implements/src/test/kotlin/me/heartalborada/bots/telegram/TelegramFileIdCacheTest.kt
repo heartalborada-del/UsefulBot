@@ -1,6 +1,7 @@
 package me.heartalborada.bots.telegram
 
 import org.h2.jdbcx.JdbcConnectionPool
+import org.jetbrains.exposed.sql.Database
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -14,7 +15,7 @@ class TelegramFileIdCacheTest {
             "",
         )
         try {
-            val cache = TelegramFileIdCache(pool)
+            val cache = TelegramFileIdCache(Database.connect(pool))
             val parts = listOf(
                 part(index = 1, count = 2, fileId = "file-1", startPage = 1, endPage = 4),
                 part(index = 2, count = 2, fileId = "file-2", startPage = 5, endPage = 8),
@@ -38,7 +39,7 @@ class TelegramFileIdCacheTest {
             "",
         )
         try {
-            val cache = TelegramFileIdCache(pool)
+            val cache = TelegramFileIdCache(Database.connect(pool))
             cache.replace(
                 BOT_ID,
                 HASH,

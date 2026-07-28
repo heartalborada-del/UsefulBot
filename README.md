@@ -10,6 +10,8 @@ UsefulBot 是一个 Kotlin 漫画下载机器人，可同时接入 NapCat / OneB
 - 支持 NapCat 与 Telegram 同时在线，共享下载任务和生成结果。
 - 获取漫画信息和封面后立即回复，下载与 PDF 生成继续在后台执行。
 - 支持重复任务合并、PDF 缓存、失败退款和每日签到。
+- 支持任务查询/取消、重启恢复、失败自动补发、批量下载和 GP 流水查询。
+- 提供访问控制、命令限流、每日额度、缓存治理、健康检查和管理员命令。
 - 内置简体中文和英文消息，未知语言自动回退到英文。
 - Telegram 可通过本地 Bot API 服务发送最大 2000 MB 的完整文件。
 
@@ -28,14 +30,14 @@ Windows：
 
 ```powershell
 .\gradlew.bat --no-daemon :implements:shadowJar
-java -jar .\implements\build\libs\implements-1.1.2.jar
+java -jar .\implements\build\libs\implements-1.2.0.jar
 ```
 
 Linux / macOS：
 
 ```bash
 ./gradlew --no-daemon :implements:shadowJar
-java -jar ./implements/build/libs/implements-1.1.2.jar
+java -jar ./implements/build/libs/implements-1.2.0.jar
 ```
 
 首次运行会在当前工作目录生成 `config.json`。修改配置后需要重启程序。
@@ -46,7 +48,7 @@ java -jar ./implements/build/libs/implements-1.1.2.jar
 
 ```json
 {
-  "version": 8,
+  "version": 9,
   "Bot": {
     "CommandOperator": "/",
     "Language": "zh-CN",
@@ -82,7 +84,34 @@ java -jar ./implements/build/libs/implements-1.1.2.jar
     "isExHentai": false,
     "MaxArchiveSizeMiB": 0
   },
-  "ComicParallelCount": 2
+  "ComicParallelCount": 2,
+  "Access": {
+    "AdminUserIds": [],
+    "AllowedUserIds": [],
+    "AllowedChatIds": [],
+    "BlockedUserIds": [],
+    "CommandsPerMinute": 20,
+    "DailyDownloadLimit": 20
+  },
+  "Tasks": {
+    "UserCapacity": 5,
+    "StateFile": "data/bot-state.json"
+  },
+  "Cache": {
+    "MaxSizeMiB": 10240,
+    "TtlDays": 30,
+    "CleanupIntervalMinutes": 60,
+    "MinimumFreeSpaceMiB": 1024
+  },
+  "DeliveryRetry": {
+    "Enabled": true,
+    "IntervalSeconds": 60,
+    "MaxAttempts": 10
+  },
+  "Batch": {
+    "Enabled": false,
+    "MaxItems": 10
+  }
 }
 ```
 
@@ -93,6 +122,17 @@ java -jar ./implements/build/libs/implements-1.1.2.jar
 - 两者可同时启用；相同漫画只下载和生成一次，再分别发送给订阅者。
 - `BlurImages`：控制对应平台发送漫画信息时是否模糊封面。
 - `Language`：支持 `en`、`en-US`、`zh`、`zh-CN`、`中文` 等写法。
+- 用户可在 Telegram 通过 `/prefs blur` 覆盖封面模糊设置；QQ/NapCat 始终使用服务端 `BlurImages`。
+- Telegram `LargeFile.Policy` 只能由服务端配置，用户命令不能更改。
+
+### 访问与运行策略
+
+- `Access.AdminUserIds`：可使用 `/health` 和 `/admin` 的用户 ID；空列表表示没有管理员。
+- `AllowedUserIds` / `AllowedChatIds`：非空时启用对应白名单；管理员始终可以访问。
+- `CommandsPerMinute` 和 `DailyDownloadLimit`：`0` 表示不限制。
+- `Tasks.StateFile` 保存待恢复任务、失败补发、动态封禁、每日额度和用户偏好。
+- `Cache` 控制 PDF 总容量、保留天数、清理周期及低磁盘告警阈值。
+- `Batch.Enabled` 默认为 `false`；只有设为 `true` 时才注册 `/batch` 并同步到 Telegram 菜单。
 
 ### 代理
 
@@ -148,6 +188,16 @@ Telegram 发送的普通 PDF 和 PDF 分卷均不设置打开密码；NapCat 发
 | `/search jm <关键词>` | 搜索 JMComic |
 | `/checkin` | 每日签到领取 GP |
 | `/info` | 查看 GP 余额和账户信息 |
+| `/history [数量]` | 查看最近的 GP 收支记录 |
+| `/tasks` | 查看任务 ID、阶段、进度和排队位置 |
+| `/cancel <任务ID>` | 取消任务或退出共享任务 |
+| `/batch` | 每行一个 `eh <链接>` 或 `jm <车号>`，批量提交；默认不注册 |
+| `/prefs show` | 查看个人语言、Telegram 封面模糊和进度通知偏好 |
+| `/prefs language <zh-CN\|en>` | 设置个人语言 |
+| `/prefs blur <on\|off\|default>` | 设置 Telegram 封面模糊；QQ 不允许设置 |
+| `/prefs progress <on\|off>` | 开关提前发送漫画信息等进度通知 |
+| `/health` | 查看队列、补发箱、用户、磁盘和 Provider 状态（管理员） |
+| `/admin` | GP、封禁、缓存、补发和任务管理（管理员） |
 
 示例：
 
@@ -171,16 +221,7 @@ E-Hentai 搜索支持：
 
 ### Telegram 命令菜单
 
-在 BotFather 中执行 `/setcommands` 后粘贴：
-
-```text
-help - 显示可用命令和子命令帮助
-about - 显示机器人信息
-get - 下载 E-Hentai 或 JMComic 漫画
-search - 搜索 E-Hentai 或 JMComic 漫画
-checkin - 每日签到领取 GP
-info - 显示账户信息和 GP 余额
-```
+Telegram 适配器连接成功后会调用 `setMyCommands`，根据程序实际注册的命令自动更新菜单，无需在 BotFather 中手工维护。菜单同步失败不会阻止 Bot 继续接收消息，失败原因会写入运行日志。
 
 ### Telegram Inline 搜索
 
@@ -202,6 +243,8 @@ info - 显示账户信息和 GP 余额
 - 发送或任务失败时自动退款。
 - 同一漫画的并发请求会合并为一个共享任务。
 - 任务完成后自动清理下载归档、解压图片、封面、断点进度和临时文件，仅保留最终 PDF。
+- PDF 缓存按配置的容量与 TTL 清理；待补发文件在补发完成前不会被清理。
+- 进程重启后会恢复未完成任务；文件发送失败时进入持久化补发箱并自动重试。
 
 ## 数据目录
 
@@ -218,14 +261,19 @@ data/
 │  └─ temp/       # PDF 临时文件
 ├─ telegram/
 │  └─ temp/       # Telegram PDF 分卷临时目录
+├─ bot-state.json # 待恢复任务、补发箱、访问状态和用户偏好
 └─ gp.*           # H2 数据库
 ```
 
 GP 数据使用 H2 持久化。请在程序停止后备份 `data/gp.mv.db`，避免得到不一致的文件快照。
 
+## 错误报告
+
+命令执行、漫画生成或文件投递发生未处理异常时，程序会在项目根目录的 `error/` 写入 `<UTC时间戳>.err.log`。日志包含平台、用户和会话、消息 ID、完整操作命令、异常原因及堆栈。用户只会收到安全提示和对应文件名，并被提示联系管理员，不会直接看到内部异常内容。
+
 ## 配置兼容
 
-旧版本配置会在启动时自动升级到当前格式，并保留未知字段。v7 升级到 v8 时会删除失效的 Telegraph 配置，并将旧的 `TELEGRAPH` 策略迁移为 `SPLIT_PDF`。高于当前支持版本的配置不会被自动降级或重写。
+旧版本配置会在启动时自动升级到当前格式，并保留未知字段。
 
 ## 测试
 

@@ -143,6 +143,20 @@ class Markdown(val content: String) : AbstractMessageObject() {
     }
 }
 
+data class ActionButton(val label: String, val command: String)
+
+class ActionKeyboard(val rows: List<List<ActionButton>>) : AbstractMessageObject() {
+    init {
+        require(rows.isNotEmpty() && rows.all { it.isNotEmpty() }) {
+            "Action keyboard must contain at least one button."
+        }
+    }
+
+    override fun toString(): String = rows.joinToString(separator = "\n", prefix = "\n") { row ->
+        row.joinToString("  ") { button -> "[${button.label}] ${button.command}" }
+    }
+}
+
 class Share(val title: String, val url: String, val content: String?, val imageUrl: String?) : AbstractMessageObject() {
     override fun toString(): String {
         return "[Share:$url]"

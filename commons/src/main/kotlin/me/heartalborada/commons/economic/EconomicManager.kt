@@ -184,6 +184,18 @@ class EconomicManager(
         }
     }
 
+    fun userCount(): Long = transaction(db) { UsersTable.selectAll().count() }
+
+    fun setRole(userId: ULong, role: UsersTable.Role): Boolean = withUserLock(userId) {
+        transaction(db) {
+            ensureUser(userId)
+            UsersTable.update({ UsersTable.id eq userId }) {
+                it[UsersTable.role] = role
+                it[updatedAt] = clock.instant()
+            } == 1
+        }
+    }
+
     private fun createRecord(
         userId: ULong,
         operation: GPRecordsTable.RecordType,
