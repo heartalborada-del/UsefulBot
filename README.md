@@ -19,7 +19,7 @@ UsefulBot 是一个 Kotlin 漫画下载机器人，可同时接入 NapCat / OneB
 
 ### 环境要求
 
-- JDK 11 或更高版本。
+- JDK 17 或更高版本（CI 使用 JDK 21）。
 - NapCat 模式：可用的 OneBot 11 正向 WebSocket 服务。
 - Telegram 模式：通过 BotFather 创建的 Bot Token。
 - 访问受限漫画源时，需要自行配置合规可用的代理。
@@ -29,15 +29,27 @@ UsefulBot 是一个 Kotlin 漫画下载机器人，可同时接入 NapCat / OneB
 Windows：
 
 ```powershell
-.\gradlew.bat --no-daemon :implements:shadowJar
-java -jar .\implements\build\libs\implements-1.2.0.jar
+.\gradlew.bat --no-daemon build
+java -jar .\implements\build\libs\UsefulBot-1.3.0.jar
 ```
 
 Linux / macOS：
 
 ```bash
-./gradlew --no-daemon :implements:shadowJar
-java -jar ./implements/build/libs/implements-1.2.0.jar
+./gradlew --no-daemon build
+java -jar ./implements/build/libs/UsefulBot-1.3.0.jar
+```
+
+普通 JAR 是动态 Loader，首次运行时会从 Maven Central 下载锁定版本的依赖，并校验 SHA-256。依赖默认缓存到
+Loader JAR 相同目录下的 `deps` 文件夹，后续运行直接复用。可通过
+`-Dusefulbot.mavenRepository=<仓库地址>` 和 `-Dusefulbot.dependencyCache=<目录>` 覆盖仓库与缓存位置。
+Loader 会通过公网出口 IP 检测国家代码；检测为中国大陆时优先使用阿里云 Maven 镜像，失败后自动回退 Maven
+Central。可通过 `-Dusefulbot.mavenRegion=CN` 强制使用中国区策略，或显式指定仓库以跳过 IP 属地检测。
+
+构建同时会生成无需联网的 `UsefulBot-1.3.0-all.jar`。只解析和缓存依赖而不启动机器人时，可执行：
+
+```bash
+java -jar ./implements/build/libs/UsefulBot-1.3.0.jar --resolve-dependencies-only
 ```
 
 首次运行会在当前工作目录生成 `config.json`。修改配置后需要重启程序。
@@ -166,7 +178,7 @@ JMComic 的 API、网页和图片域名已内置，通常无需手动配置。
 
 如需发送完整大文件，请运行官方的本地 [`telegram-bot-api`](https://github.com/tdlib/telegram-bot-api) 服务，并修改：
 
-```json
+```
 "ApiBaseURL": "http://127.0.0.1:8081",
 "UploadTimeoutMinutes": 60
 ```

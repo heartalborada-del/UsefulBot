@@ -559,8 +559,7 @@ class TelegramBot(
             .post(body)
             .build()
         client.newCall(request).execute().use { response ->
-            val responseBody = response.body?.string()
-                ?: throw IllegalStateException("Telegram returned an empty response for $method.")
+            val responseBody = response.body.string()
             val root = runCatching {
                 JsonParser.parseString(responseBody).asJsonObject
             }.getOrNull()

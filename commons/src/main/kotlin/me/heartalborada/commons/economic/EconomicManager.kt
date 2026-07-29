@@ -4,17 +4,16 @@ import me.heartalborada.commons.economic.dao.GPRecord
 import me.heartalborada.commons.economic.dao.User
 import me.heartalborada.commons.economic.tables.GPRecordsTable
 import me.heartalborada.commons.economic.tables.UsersTable
-import org.jetbrains.exposed.dao.id.EntityID
-import org.jetbrains.exposed.sql.Database
-import org.jetbrains.exposed.sql.SchemaUtils
-import org.jetbrains.exposed.sql.SqlExpressionBuilder
-import org.jetbrains.exposed.sql.SortOrder
-import org.jetbrains.exposed.sql.and
-import org.jetbrains.exposed.sql.insert
-import org.jetbrains.exposed.sql.selectAll
-import org.jetbrains.exposed.sql.transactions.transaction
-import org.jetbrains.exposed.sql.update
-import org.jetbrains.exposed.sql.vendors.currentDialect
+import org.jetbrains.exposed.v1.core.*
+import org.jetbrains.exposed.v1.core.dao.id.EntityID
+import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.SchemaUtils
+import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.select
+import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.jetbrains.exposed.v1.jdbc.update
+import org.jetbrains.exposed.v1.jdbc.vendors.currentDialectMetadata
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
@@ -36,13 +35,13 @@ class EconomicManager(
             SchemaUtils.addMissingColumnsStatements(*tables).forEach { statement ->
                 exec(statement)
             }
-            val existingIndexNames = currentDialect.existingIndices(*tables)
+            val existingIndexNames = currentDialectMetadata.existingIndices(*tables)
                 .values
                 .flatten()
-                .mapTo(mutableSetOf()) { it.indexName.lowercase() }
+                .mapTo(mutableSetOf()) { index -> index.indexName.lowercase() }
             tables
-                .flatMap { it.indices }
-                .filterNot { it.indexName.lowercase() in existingIndexNames }
+                .flatMap { table -> table.indices }
+                .filterNot { index -> index.indexName.lowercase() in existingIndexNames }
                 .flatMap(SchemaUtils::createIndex)
                 .forEach { statement -> exec(statement) }
         }
@@ -96,9 +95,7 @@ class EconomicManager(
                 val updatedRows = UsersTable.update({
                     (UsersTable.id eq userId) and (UsersTable.balance lessEq Long.MAX_VALUE - amount)
                 }) {
-                    with(SqlExpressionBuilder) {
-                        it.update(UsersTable.balance, UsersTable.balance + amount)
-                    }
+                    it.update(UsersTable.balance, UsersTable.balance + amount)
                     it[updatedAt] = now
                 }
                 if (updatedRows == 0) {
@@ -119,9 +116,7 @@ class EconomicManager(
                 val updatedRows = UsersTable.update({
                     (UsersTable.id eq userId) and (UsersTable.balance greaterEq amount)
                 }) {
-                    with(SqlExpressionBuilder) {
-                        it.update(UsersTable.balance, UsersTable.balance - amount)
-                    }
+                    it.update(UsersTable.balance, UsersTable.balance - amount)
                     it[updatedAt] = now
                 }
                 if (updatedRows == 0) {
@@ -152,9 +147,7 @@ class EconomicManager(
                         (UsersTable.checkinAt less start) and
                         (UsersTable.balance lessEq Long.MAX_VALUE - award)
                 }) {
-                    with(SqlExpressionBuilder) {
-                        it.update(UsersTable.balance, UsersTable.balance + award.toLong())
-                    }
+                    it.update(UsersTable.balance, UsersTable.balance + award.toLong())
                     it[updatedAt] = now
                     it[checkinAt] = now
                 }

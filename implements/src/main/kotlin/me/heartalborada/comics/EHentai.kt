@@ -19,6 +19,7 @@ import org.jsoup.nodes.Document
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.io.IOException
+import java.time.Duration
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -77,7 +78,7 @@ class EHentai(
     }
 
     private val infoCache = CacheBuilder.newBuilder()
-        .expireAfterWrite(24, java.util.concurrent.TimeUnit.HOURS)
+        .expireAfterWrite(Duration.ofHours(24))
         .maximumSize(1024)
         .build<Pair<String, String>, ComicInformation<Pair<String, String>>>()
 
@@ -471,7 +472,7 @@ class EHentai(
 
     private fun Response.precheck(): String {
         if (!this.isSuccessful || this.code != 200) throw IllegalStateException("Invalid status code: ${this.code}")
-        val body = this.body?.string() ?: throw IllegalStateException("Failed to load page")
+        val body = this.body.string()
         if (body.trim().isEmpty()) throw IllegalStateException("Failed to load page")
         return body
     }

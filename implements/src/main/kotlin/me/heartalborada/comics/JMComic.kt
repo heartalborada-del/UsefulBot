@@ -349,7 +349,7 @@ class JMComic(
                     if (!response.isSuccessful) {
                         throw IOException("JMComic returned HTTP ${response.code} from $domain")
                     }
-                    val body = response.body?.string().orEmpty()
+                    val body = response.body.string()
                     if (body.isBlank()) throw IOException("JMComic returned an empty response from $domain")
                     if ("Restricted Access!" in body) {
                         throw IOException("JMComic rejected access from the current network.")
@@ -450,7 +450,7 @@ class JMComic(
                     if (cookies.isNotEmpty()) {
                         apiCookieHeader = cookies.joinToString("; ") { "${it.name}=${it.value}" }
                     }
-                    val body = response.body?.string().orEmpty()
+                    val body = response.body.string()
                     if (body.isBlank()) throw IOException("JMComic API returned an empty response from $domain")
                     return body
                 }
@@ -543,7 +543,7 @@ class JMComic(
             try {
                 client.newCall(Request.Builder().url(candidate).build()).execute().use { response ->
                     if (!response.isSuccessful) throw IOException("Image request returned HTTP ${response.code}")
-                    val bytes = response.body?.bytes() ?: throw IOException("Image response was empty")
+                    val bytes = response.body.bytes()
                     if (bytes.isEmpty()) throw IOException("Image response was empty")
                     return bytes
                 }

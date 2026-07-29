@@ -1,7 +1,7 @@
 package me.heartalborada.bots.telegram
 
 import org.h2.jdbcx.JdbcConnectionPool
-import org.jetbrains.exposed.sql.Database
+import org.jetbrains.exposed.v1.jdbc.Database
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue

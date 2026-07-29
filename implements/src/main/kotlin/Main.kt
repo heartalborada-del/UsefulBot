@@ -56,16 +56,17 @@ import me.heartalborada.state.PersistentSubscriber
 import me.heartalborada.state.PersistentTask
 import me.heartalborada.state.UserPreference
 import okhttp3.Cookie
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.h2.jdbcx.JdbcConnectionPool
-import org.jetbrains.exposed.sql.Database
+import org.jetbrains.exposed.v1.jdbc.Database
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Proxy
-import java.net.URL
+import java.net.URI
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -74,7 +75,7 @@ import java.util.concurrent.TimeUnit
 import javax.imageio.ImageIO
 
 private val pdfCache = CacheBuilder.newBuilder()
-    .expireAfterWrite(24, java.util.concurrent.TimeUnit.HOURS)
+    .expireAfterWrite(Duration.ofHours(24))
     .maximumSize(1024)
     .build<String, Boolean>()
 
@@ -527,7 +528,7 @@ fun main() = runBlocking {
             File(File(ehTempFolder, "download"), taskName),
         )
         try {
-        val cover = "cover.${Util.getFileExtensionFromUrl(URL(info.cover))}"
+        val cover = "cover.${Util.getFileExtensionFromUrl(URI.create(info.cover).toURL())}"
         downloader.downloadFiles(listOf(Pair(info.cover, cover)), cf, 2)
         val coverFile = File(cf, cover)
         publishComicInformation(
@@ -932,9 +933,9 @@ fun main() = runBlocking {
         it
     }
     if (config.getConfig().eHentai.isExHentai)
-        cookieJar.saveFromResponse(URL("https://exhentai.org/").toHttpUrlOrNull()!!, ck)
+        cookieJar.saveFromResponse("https://exhentai.org/".toHttpUrl(), ck)
     else
-        cookieJar.saveFromResponse(URL("https://e-hentai.org/").toHttpUrlOrNull()!!, ck)
+        cookieJar.saveFromResponse("https://e-hentai.org/".toHttpUrl(), ck)
     client = if (config.getConfig().proxy.type == Proxy.Type.DIRECT) {
         OkHttpClient.Builder().build()
     } else {

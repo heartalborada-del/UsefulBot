@@ -117,7 +117,7 @@ class DownloadTask(
             if (!response.isSuccessful) {
                 throw IOException("Failed to download file: HTTP ${response.code}")
             }
-            val body = response.body ?: throw IOException("Empty response body for $url")
+            val body = response.body
             var position = 0L
             val buffer = ByteArray(8192)
             body.byteStream().use { input ->
@@ -169,7 +169,7 @@ class DownloadTask(
                             "Invalid Content-Range for bytes=$from-$to: ${contentRange ?: "<missing>"}"
                         )
                     }
-                    val body = response.body ?: throw IOException("Empty response body for bytes=$from-$to")
+                    val body = response.body
                     val buffer = ByteArray(8192)
                     body.byteStream().use { input ->
                         while (position <= to) {

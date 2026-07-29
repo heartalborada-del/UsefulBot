@@ -1,7 +1,7 @@
 package me.heartalborada.commons.economic
 
 import me.heartalborada.commons.economic.tables.GPRecordsTable
-import org.jetbrains.exposed.sql.Database
+import org.jetbrains.exposed.v1.jdbc.Database
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset

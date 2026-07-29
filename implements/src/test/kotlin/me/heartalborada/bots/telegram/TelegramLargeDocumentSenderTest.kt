@@ -4,7 +4,7 @@ import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.comic.PDFGenerator
 import me.heartalborada.commons.comic.SizeBoundedPdfSplitter
 import org.h2.jdbcx.JdbcConnectionPool
-import org.jetbrains.exposed.sql.Database
+import org.jetbrains.exposed.v1.jdbc.Database
 import java.awt.image.BufferedImage
 import java.io.File
 import java.nio.file.Files

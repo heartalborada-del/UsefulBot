@@ -1,32 +1,49 @@
+import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
+
 plugins {
-    kotlin("jvm") version "2.3.0"
+    kotlin("jvm") version "2.4.10" apply false
 }
 
 group = "me.heartalborada"
 version = "1.3.0"
 
-val exposedVersion: String by project
-allprojects {
+val exposedVersion = project.property("exposedVersion").toString()
+subprojects {
     version = rootProject.version
     repositories {
         mavenCentral()
     }
-    apply(plugin = "org.jetbrains.kotlin.jvm")
-    dependencies {
-        testImplementation(kotlin("test"))
-        testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
-        implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.0")
-        implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
-        implementation("com.squareup.okhttp3:okhttp:4.12.0")
-        implementation("com.google.code.gson:gson:2.12.1")
-        implementation("org.slf4j:slf4j-api:2.0.17")
-        implementation("commons-io:commons-io:2.18.0")
-        implementation("org.jetbrains.exposed:exposed-core:${exposedVersion}")
-        implementation("org.jetbrains.exposed:exposed-jdbc:${exposedVersion}")
-        implementation("org.jetbrains.exposed:exposed-dao:${exposedVersion}")
+
+    pluginManager.withPlugin("org.jetbrains.kotlin.jvm") {
+        extensions.configure<KotlinJvmProjectExtension> {
+            jvmToolchain(17)
+        }
+        dependencies {
+            add("testImplementation", kotlin("test-junit5"))
+            add("testImplementation", "org.junit.jupiter:junit-jupiter:6.1.2")
+            add("implementation", "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
+            add("implementation", "com.squareup.okhttp3:okhttp:5.4.0")
+            add("implementation", "com.google.code.gson:gson:2.14.0")
+            add("implementation", "org.slf4j:slf4j-api:2.0.18")
+            add("implementation", "commons-io:commons-io:2.22.0")
+            add("implementation", "org.jetbrains.exposed:exposed-core:${exposedVersion}")
+            add("implementation", "org.jetbrains.exposed:exposed-jdbc:${exposedVersion}")
+            add("implementation", "org.jetbrains.exposed:exposed-dao:${exposedVersion}")
+        }
+        tasks.withType<Test>().configureEach {
+            useJUnitPlatform()
+        }
     }
 }
 
-tasks.jar {
-    enabled = false
+tasks.register("shadowJar") {
+    group = "build"
+    description = "Builds the executable shadow JAR from the implements module."
+    dependsOn(":implements:shadowJar")
+}
+
+tasks.register("loaderJar") {
+    group = "build"
+    description = "Builds the executable loader JAR that resolves dependencies from Maven."
+    dependsOn(":implements:jar")
 }

@@ -20,7 +20,11 @@ class EventBus {
     fun register(listener: Any) {
         listener::class.java.methods.forEach { method ->
             method.getAnnotation(EventHandler::class.java)?.let {
-                val eventType = method.parameterTypes.first() as Class<out Event>
+                val parameterType = method.parameterTypes.singleOrNull()
+                    ?.takeIf(Event::class.java::isAssignableFrom)
+                    ?: return@let
+                @Suppress("UNCHECKED_CAST")
+                val eventType = parameterType as Class<out Event>
                 val eventListener: (Event) -> Unit = { event ->
                     method.invoke(listener, event)
                 }

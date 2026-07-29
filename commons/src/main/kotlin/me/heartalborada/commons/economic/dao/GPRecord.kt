@@ -1,9 +1,9 @@
 package me.heartalborada.commons.economic.dao
 
 import me.heartalborada.commons.economic.tables.GPRecordsTable
-import org.jetbrains.exposed.dao.Entity
-import org.jetbrains.exposed.dao.EntityClass
-import org.jetbrains.exposed.dao.id.EntityID
+import org.jetbrains.exposed.v1.core.dao.id.EntityID
+import org.jetbrains.exposed.v1.dao.Entity
+import org.jetbrains.exposed.v1.dao.EntityClass
 
 class GPRecord(id: EntityID<ULong>) : Entity<ULong>(id) {
     companion object : EntityClass<ULong, GPRecord>(GPRecordsTable)
