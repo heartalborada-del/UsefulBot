@@ -2,6 +2,7 @@ package me.heartalborada.permissions
 
 import me.heartalborada.commons.permissions.PermissionContext
 import me.heartalborada.commons.permissions.PermissionDefault
+import me.heartalborada.commons.permissions.PermissionNodeRegistry
 import me.heartalborada.commons.permissions.PermissionService
 import me.heartalborada.commons.permissions.PermissionSubject
 import me.heartalborada.state.BotStateStore
@@ -9,17 +10,20 @@ import me.heartalborada.state.BotStateStore
 /** Permission rules backed by the existing atomic bot state file. */
 class PersistentPermissionService(
     private val state: BotStateStore,
-) : PermissionService {
+) : PermissionService, PermissionNodeRegistry {
+    private val registeredNodes = mutableMapOf<String, Int>()
+
     override fun hasPermission(
         context: PermissionContext,
         permission: String,
         default: PermissionDefault,
     ): Boolean {
         val node = requirePermission(permission)
-        evaluate(context.user, node)?.let { return it }
-        context.group?.let { group -> evaluate(group, node)?.let { return it } }
+        evaluate(subjectMatches(context.user, context.group), node)?.let { return it }
         if (default.allowsUnconfigured) return true
-        if (default.requiresAdministrator) return evaluate(context.user, ADMIN_PERMISSION) == true
+        if (default.requiresAdministrator) {
+            return evaluate(subjectMatches(context.user), ADMIN_PERMISSION) == true
+        }
         return false
     }
 
@@ -34,16 +38,71 @@ class PersistentPermissionService(
 
     override fun rules(subject: PermissionSubject): Set<String> = state.permissions(subject.key)
 
-    private fun evaluate(subject: PermissionSubject, permission: String): Boolean? {
-        val matches = rules(subject).mapNotNull { stored ->
-            val denied = stored.startsWith('-')
-            val rule = stored.removePrefix("-")
-            val specificity = specificity(rule, permission) ?: return@mapNotNull null
-            RuleMatch(allowed = !denied, specificity = specificity)
+    @Synchronized
+    override fun register(node: String) {
+        val normalized = requirePermission(node)
+        registeredNodes[normalized] = registeredNodes.getOrDefault(normalized, 0) + 1
+    }
+
+    @Synchronized
+    override fun unregister(node: String) {
+        val normalized = requirePermission(node)
+        val count = registeredNodes[normalized] ?: return
+        if (count <= 1) registeredNodes.remove(normalized) else registeredNodes[normalized] = count - 1
+    }
+
+    @Synchronized
+    override fun suggestions(prefix: String): List<String> {
+        val normalized = prefix.trim().lowercase()
+        return registeredNodes.keys.filter { it.startsWith(normalized) }.sorted()
+    }
+
+    private fun evaluate(subjects: Collection<SubjectMatch>, permission: String): Boolean? {
+        val matches = subjects.flatMap { subject ->
+            rules(subject.subject).mapNotNull { stored ->
+                val rule = parseRule(stored) ?: return@mapNotNull null
+                val specificity = specificity(rule.node, permission) ?: return@mapNotNull null
+                RuleMatch(
+                    allowed = rule.allowed,
+                    subjectSpecificity = subject.specificity,
+                    permissionSpecificity = specificity,
+                )
+            }
         }
-        val mostSpecific = matches.maxOfOrNull(RuleMatch::specificity) ?: return null
+        val subjectSpecificity = matches.maxOfOrNull(RuleMatch::subjectSpecificity) ?: return null
+        val subjectMatches = matches.filter { it.subjectSpecificity == subjectSpecificity }
+        val permissionSpecificity = subjectMatches.maxOf(RuleMatch::permissionSpecificity)
         // An explicit deny wins when allow and deny have equal specificity.
-        return matches.filter { it.specificity == mostSpecific }.all(RuleMatch::allowed)
+        return subjectMatches
+            .filter { it.permissionSpecificity == permissionSpecificity }
+            .all(RuleMatch::allowed)
+    }
+
+    private fun subjectMatches(vararg subjects: PermissionSubject?): List<SubjectMatch> {
+        val exactSubjects = subjects.filterNotNull()
+        val platforms = exactSubjects.map(PermissionSubject::canonicalPlatform).distinct()
+        return buildList {
+            add(SubjectMatch(PermissionSubject.all(), SUBJECT_GLOBAL))
+            platforms.forEach { platform ->
+                add(SubjectMatch(PermissionSubject.all(platform), SUBJECT_PLATFORM))
+            }
+            exactSubjects.forEach { subject ->
+                add(
+                    SubjectMatch(
+                        PermissionSubject.wildcard(subject.canonicalPlatform, subject.type),
+                        SUBJECT_TYPE,
+                    ),
+                )
+                add(SubjectMatch(subject, SUBJECT_EXACT))
+            }
+        }.distinctBy { it.subject.key }
+    }
+
+    private fun parseRule(stored: String): PermissionRule? {
+        val normalized = stored.trim().lowercase()
+        val allowed = !normalized.startsWith('-')
+        val node = normalized.removePrefix("+").removePrefix("-")
+        return node.takeIf(PERMISSION_NODE::matches)?.let { PermissionRule(it, allowed) }
     }
 
     private fun specificity(rule: String, permission: String): Int? = when {
@@ -63,10 +122,20 @@ class PersistentPermissionService(
         return normalized
     }
 
-    private data class RuleMatch(val allowed: Boolean, val specificity: Int)
+    private data class SubjectMatch(val subject: PermissionSubject, val specificity: Int)
+    private data class RuleMatch(
+        val allowed: Boolean,
+        val subjectSpecificity: Int,
+        val permissionSpecificity: Int,
+    )
+    private data class PermissionRule(val node: String, val allowed: Boolean)
 
     private companion object {
         const val ADMIN_PERMISSION = "usefulbot.admin"
+        const val SUBJECT_GLOBAL = 0
+        const val SUBJECT_PLATFORM = 1
+        const val SUBJECT_TYPE = 2
+        const val SUBJECT_EXACT = 3
         val PERMISSION_NODE = Regex("\\*|[a-z0-9_-]+(?:\\.[a-z0-9_-]+)*(?:\\.\\*)?")
     }
 }

@@ -30,6 +30,25 @@ class JLineConsoleTest {
     }
 
     @Test
+    fun `permission editing completes plain nodes only in the node position`() {
+        val nodes = listOf("jm.query", "eh.search", "eh.query")
+        val suggestions: (String) -> List<String> = { prefix -> nodes.filter { it.startsWith(prefix) } }
+
+        assertEquals(
+            listOf("eh.query", "eh.search"),
+            completePermissionNodes(listOf("permission", "deny", "qq:user:7", "eh."), 3, "eh.", suggestions),
+        )
+        assertEquals(
+            listOf("jm.query"),
+            completePermissionNodes(listOf("perm", "grant", "*", "jm.q"), 3, "jm.q", suggestions),
+        )
+        assertEquals(
+            emptyList(),
+            completePermissionNodes(listOf("permission", "show", "qq:user:7"), 2, "qq:user:7", suggestions),
+        )
+    }
+
+    @Test
     fun `ctrl c stops only when the current input is empty`() {
         assertTrue(shouldStopAfterInterrupt(""))
         assertTrue(shouldStopAfterInterrupt(null))

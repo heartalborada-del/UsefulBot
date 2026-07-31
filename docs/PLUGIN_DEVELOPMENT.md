@@ -165,10 +165,14 @@ have been removed. Bootstrap the first administrator from the console with:
 permission grant tg:user:123 usefulbot.admin
 ```
 
-Subjects are isolated by platform and type. Canonical keys are `tg:user:123`,
-`tg:group:-100`, `qq:user:123`, and `qq:group:456`. Within a command on the current
-platform, `user:123` and `group:456` are accepted as shorthand. Legacy `tg:123`
-and `qq:123` keys are read as user subjects. Delegated managers need
+Subjects are isolated by platform and type. Selectors, from least to most
+specific, are `*`, `qq:*`, `qq:user:*` or `qq:group:*`, and exact subjects such
+as `qq:user:123` or `qq:group:456`. A group command matches both its user and
+group branches, so a nested `qq:group:user:*` selector is unnecessary and is not
+accepted. `telegram`/`tg` and `napcat`/`qq` are normalized to `tg` and `qq`.
+Within a command on the current platform, `user:123` and `group:456` are accepted
+as shorthand. Legacy `tg:123` and `qq:123` keys are read as user subjects.
+Delegated managers need
 `usefulbot.permissions.manage`. Runtime management commands are:
 
 ```text
@@ -180,14 +184,23 @@ and `qq:123` keys are read as user subjects. Delegated managers need
 /permission unban <user-subject>
 ```
 
+The interactive console completes registered permission nodes in the node
+argument of `permission grant`, `permission deny`, and `permission revoke`.
+Suggestions contain plain nodes such as `eh.query`, without `+` or `-` prefixes.
+
 `grant` stores an allow rule, `deny` stores an explicit deny, and `revoke` removes
-both forms for that exact node. Groups can receive permission rules but cannot be
-banned. `self`/`user` and `here`/`group` address the current command context.
+all forms for that exact node. In the state file, `+` explicitly allows and `-`
+explicitly denies; omitting the prefix also means allow. Groups can receive
+permission rules, but only exact users can be banned. `self`/`user` and
+`here`/`group` address the current command context.
 
 Permission nodes support exact matches, namespace wildcards such as `example.*`,
 and the global `*` wildcard. Parent fallback is automatic: granting
-`example.manage` also permits `example.manage.reload`. The most specific matching
-rule wins; an explicit deny wins when allow and deny have equal specificity.
+`example.manage` also permits `example.manage.reload`. Resolution first selects
+the most specific matching subject level, then the most specific permission node
+at that level. User and group branches have equal specificity; an explicit deny
+wins when both dimensions tie. For example, `+a.b.*` with `-a.b.c` denies only
+`a.b.c`, while `-a.b.*` with `+a.b.c` allows only that exception.
 
 ## Configuration
 

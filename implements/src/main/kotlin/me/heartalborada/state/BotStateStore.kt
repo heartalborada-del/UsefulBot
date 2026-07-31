@@ -2,8 +2,10 @@ package me.heartalborada.state
 
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonArray
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import me.heartalborada.commons.ChatType
+import me.heartalborada.commons.permissions.PermissionSubject
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -68,11 +70,11 @@ class BotStateStore(private val file: File) {
     private var state = load()
 
     @Synchronized
-    fun isBanned(identity: String): Boolean = identity.lowercase() in state.bannedUsers
+    fun isBanned(identity: String): Boolean = normalizeUserIdentity(identity) in state.bannedUsers
 
     @Synchronized
     fun setBanned(identity: String, banned: Boolean) {
-        val normalized = identity.trim().lowercase()
+        val normalized = normalizeUserIdentity(identity)
         require(normalized.isNotEmpty()) { "Identity must not be blank." }
         val changed = if (banned) state.bannedUsers.add(normalized) else state.bannedUsers.remove(normalized)
         if (changed) save()
@@ -80,21 +82,22 @@ class BotStateStore(private val file: File) {
 
     @Synchronized
     fun permissions(identity: String): Set<String> =
-        state.permissions[identity.trim().lowercase()]?.toSet().orEmpty()
+        state.permissions[normalizePermissionIdentity(identity)]?.toSet().orEmpty()
 
     @Synchronized
     fun setPermissionRule(subject: String, permission: String, effect: Boolean?): Boolean {
-        val normalizedIdentity = subject.trim().lowercase()
+        val normalizedIdentity = normalizePermissionIdentity(subject)
         val normalizedPermission = permission.trim().lowercase()
         require(normalizedIdentity.isNotEmpty()) { "Identity must not be blank." }
         require(normalizedPermission.isNotEmpty()) { "Permission must not be blank." }
         val current = state.permissions.getOrPut(normalizedIdentity) { mutableSetOf() }
         val allowRule = normalizedPermission
+        val explicitAllowRule = "+$normalizedPermission"
         val denyRule = "-$normalizedPermission"
         val changed = when (effect) {
-            true -> current.remove(denyRule) or current.add(allowRule)
-            false -> current.remove(allowRule) or current.add(denyRule)
-            null -> current.remove(allowRule) or current.remove(denyRule)
+            true -> current.removeAll(setOf(explicitAllowRule, denyRule)) or current.add(allowRule)
+            false -> current.removeAll(setOf(allowRule, explicitAllowRule)) or current.add(denyRule)
+            null -> current.removeAll(setOf(allowRule, explicitAllowRule, denyRule))
         }
         if (current.isEmpty()) state.permissions.remove(normalizedIdentity)
         if (changed) save()
@@ -204,7 +207,7 @@ class BotStateStore(private val file: File) {
                 existing.forEach { item ->
                     val value = item.asString.trim().lowercase()
                     if (':' in value) {
-                        normalized.add(value)
+                        runCatching { normalizeUserIdentity(value) }.getOrNull()?.let(normalized::add)
                     } else if (value.toLongOrNull() != null) {
                         normalized.add("tg:$value")
                         normalized.add("qq:$value")
@@ -213,15 +216,15 @@ class BotStateStore(private val file: File) {
                 root.add("bannedUsers", normalized)
             }
             root.getAsJsonObject("permissions")?.let { existing ->
-                val normalized = com.google.gson.JsonObject()
+                val normalized = JsonObject()
                 existing.entrySet().forEach { (key, rules) ->
-                    val parts = key.trim().lowercase().split(':')
-                    val normalizedKey = if (parts.size == 2 && parts[1].toLongOrNull() != null) {
-                        "${parts[0]}:user:${parts[1]}"
-                    } else {
-                        key.trim().lowercase()
+                    if (!rules.isJsonArray) return@forEach
+                    val normalizedKey = normalizePermissionIdentity(key)
+                    val normalizedRules = normalized.getAsJsonArray(normalizedKey)
+                        ?: JsonArray().also { normalized.add(normalizedKey, it) }
+                    rules.asJsonArray.forEach { rule ->
+                        if (!normalizedRules.contains(rule)) normalizedRules.add(rule.deepCopy())
                     }
-                    normalized.add(normalizedKey, rules.deepCopy())
                 }
                 root.add("permissions", normalized)
             }
@@ -248,6 +251,17 @@ class BotStateStore(private val file: File) {
         }.getOrElse {
             Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }
+    }
+
+    private fun normalizePermissionIdentity(identity: String): String =
+        PermissionSubject.parse(identity)?.key ?: identity.trim().lowercase()
+
+    private fun normalizeUserIdentity(identity: String): String {
+        val parts = identity.trim().lowercase().split(':')
+        require(parts.size == 2 && parts[1].toLongOrNull() != null) { "Invalid user identity: $identity" }
+        val platform = PermissionSubject.normalizePlatform(parts[0])
+        require(platform != "*") { "A user identity must have a concrete platform." }
+        return "$platform:${parts[1]}"
     }
 
     private fun userKey(adapter: String, userId: Long): String = "${adapter.lowercase()}:$userId"

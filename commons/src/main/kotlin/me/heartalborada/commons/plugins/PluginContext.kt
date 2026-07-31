@@ -15,6 +15,7 @@ import me.heartalborada.commons.bots.dto.MessageSender
 import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.permissions.PermissionContext
 import me.heartalborada.commons.permissions.PermissionDefault
+import me.heartalborada.commons.permissions.PermissionNodeRegistry
 import me.heartalborada.commons.permissions.PermissionService
 import me.heartalborada.commons.permissions.PermissionSubject
 import me.heartalborada.commons.permissions.PermissionSubjectType
@@ -162,6 +163,7 @@ class PluginContext(
                 },
             )
         }
+        registerPermissionNodes(listOf(permissionNode))
     }
 
     /** Registers the same subcommand tree on every active bot adapter. */
@@ -194,6 +196,7 @@ class PluginContext(
                 }
             }
         }
+        registerPermissionNodes(definitions.map(PluginSubcommandBuilder.Definition::permission))
     }
 
     /** Adds an arbitrary idempotent cleanup action to the plugin lifecycle. */
@@ -244,6 +247,13 @@ class PluginContext(
 
     private fun own(action: () -> Unit) {
         cleanupActions += action
+    }
+
+    private fun registerPermissionNodes(nodes: Collection<String>) {
+        val registry = findService(PermissionNodeRegistry::class.java) ?: return
+        val distinctNodes = nodes.distinct()
+        distinctNodes.forEach(registry::register)
+        own { distinctNodes.forEach(registry::unregister) }
     }
 
     private fun executeAuthorized(

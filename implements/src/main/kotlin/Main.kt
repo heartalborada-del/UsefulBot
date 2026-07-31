@@ -1011,12 +1011,27 @@ fun main() = runBlocking {
 
     data class ProviderDefinition(
         val parse: (String) -> ComicTask,
+        val query: (String) -> ComicInformationPreview,
         val search: (String, Int, ComicSearchOptions) -> ComicSearchPage<*>,
         val generate: suspend (ComicTask) -> ComicTaskResult,
         val deliver: (ComicTaskResult, QueueExtraData) -> Unit,
     )
     val providers = ComicProviderRegistry<ProviderDefinition>()
     val permissionService = PersistentPermissionService(stateStore)
+    listOf(
+        "eh.get",
+        "eh.query",
+        "eh.search",
+        "jm.get",
+        "jm.query",
+        "jm.search",
+        "usefulbot.health",
+        "usefulbot.admin.status",
+        "usefulbot.admin.gp",
+        "usefulbot.admin.cache",
+        "usefulbot.admin.retry",
+        "usefulbot.admin.cancel",
+    ).forEach(permissionService::register)
     val cacheJanitor = CacheJanitor()
     val connectedAdapters = ConcurrentHashMap.newKeySet<String>()
     lateinit var pluginManager: PluginManager
@@ -1066,6 +1081,20 @@ fun main() = runBlocking {
             )
             return false
         }
+
+        fun permissionExecutor(node: String, executor: CommandExecutor): CommandExecutor =
+            CommandExecutor { sender, command, arguments, messageID ->
+                if (!hasPermission(sender, node, PermissionDefault.ALLOW)) {
+                    bot.reply(
+                        sender,
+                        messageID,
+                        translatorFor(preference(bot, sender.user.userID).language)
+                            .translate("permission.command_denied", node),
+                    )
+                    return@CommandExecutor
+                }
+                executor.execute(sender, command, arguments, messageID)
+            }
 
         bot.onCommandError(CommandErrorHandler { sender, operation, messageID, error ->
             val fileName = recordCommandError(bot, sender, messageID, operation, error)
@@ -1206,12 +1235,12 @@ fun main() = runBlocking {
         subcommand(
             "eh",
             usage = translator.translate("command.get.eh.usage", config.getConfig().bot.commandOperator),
-            executor = getEHExecutor,
+            executor = permissionExecutor("eh.get", getEHExecutor),
         )
         subcommand(
             "jm",
             usage = translator.translate("command.get.jm.usage", config.getConfig().bot.commandOperator),
-            executor = getJMExecutor,
+            executor = permissionExecutor("jm.get", getJMExecutor),
         )
     }
 
@@ -1312,12 +1341,68 @@ fun main() = runBlocking {
         subcommand(
             "eh",
             usage = translator.translate("command.search.eh.usage", config.getConfig().bot.commandOperator),
-            executor = searchExecutor("eh"),
+            executor = permissionExecutor("eh.search", searchExecutor("eh")),
         )
         subcommand(
             "jm",
             usage = translator.translate("command.search.jm.usage", config.getConfig().bot.commandOperator),
-            executor = searchExecutor("jm"),
+            executor = permissionExecutor("jm.search", searchExecutor("jm")),
+        )
+    }
+
+    fun queryExecutor(source: String): CommandExecutor = CommandExecutor { sender, _, args, messageID ->
+        val userTranslator = translatorFor(preference(bot, sender.user.userID).language)
+        val target = args.toString().trim()
+        if (target.isEmpty()) {
+            bot.reply(
+                sender,
+                messageID,
+                userTranslator.translate(
+                    if (source == "eh") "command.query.eh.usage" else "command.query.jm.usage",
+                    config.getConfig().bot.commandOperator,
+                ),
+            )
+            return@CommandExecutor
+        }
+        val preview = try {
+            checkNotNull(providers.resolve(source)) { "Comic provider $source is unavailable." }.query(target)
+        } catch (_: IllegalArgumentException) {
+            bot.reply(
+                sender,
+                messageID,
+                userTranslator.translate(if (source == "eh") "command.eh.invalid_url" else "command.jm.invalid_target"),
+            )
+            return@CommandExecutor
+        } catch (exception: Exception) {
+            logger.warn("Comic query failed for {} target {}: {}", source, target, exception)
+            bot.reply(sender, messageID, userTranslator.translate("command.query.failed"))
+            return@CommandExecutor
+        }
+        val userPreference = preference(bot, sender.user.userID)
+        sendComicInformation(
+            info = preview.info,
+            coverFile = preview.cover,
+            sender = sender,
+            messageID = messageID,
+            bot = bot,
+            blurImages = userPreference.blurImages ?: blurImages,
+            messageTranslator = userTranslator,
+        )
+    }
+
+    bot.registerCommand(
+        "query",
+        usage = translator.translate("command.query.usage", config.getConfig().bot.commandOperator),
+    ) {
+        subcommand(
+            "eh",
+            usage = translator.translate("command.query.eh.usage", config.getConfig().bot.commandOperator),
+            executor = permissionExecutor("eh.query", queryExecutor("eh")),
+        )
+        subcommand(
+            "jm",
+            usage = translator.translate("command.query.jm.usage", config.getConfig().bot.commandOperator),
+            executor = permissionExecutor("jm.query", queryExecutor("jm")),
         )
     }
 
@@ -1704,6 +1789,27 @@ fun main() = runBlocking {
                 registry = providers,
                 provider = ProviderDefinition(
                     parse = { ComicTask.EHentai(eh.parseUrl(it)) },
+                    query = { target ->
+                        val gallery = eh.parseUrl(target)
+                        val info = eh.getTargetInformation(gallery)
+                        val taskName = "${gallery.first}-${gallery.second}"
+                        val imageDirectory = File(ehImgFolder, taskName).apply { mkdirs() }
+                        val extension = Util.getFileExtensionFromUrl(URI.create(info.cover).toURL())
+                            ?.takeIf(String::isNotBlank)
+                            ?: "jpg"
+                        val cover = File(imageDirectory, "cover.$extension")
+                        if (!cover.isFile) {
+                            DownloadManager(1, client, File(ehTempFolder, "query")).use { downloader ->
+                                val failed = downloader.downloadFiles(
+                                    listOf(info.cover to cover.name),
+                                    imageDirectory,
+                                    1,
+                                )
+                                check(failed.isEmpty() && cover.isFile) { "Failed to download the gallery cover." }
+                            }
+                        }
+                        ComicInformationPreview(info, cover)
+                    },
                     search = eh::search,
                     generate = { task -> generateEHentai((task as ComicTask.EHentai).gallery) },
                     deliver = { result, extra -> deliverEHentai(result as ComicTaskResult.EHentai, extra) },
@@ -1724,6 +1830,15 @@ fun main() = runBlocking {
                 registry = providers,
                 provider = ProviderDefinition(
                     parse = { ComicTask.JMComic(jm.parseUrl(it)) },
+                    query = { target ->
+                        val albumId = jm.parseUrl(target)
+                        val info = jm.getTargetInformation(albumId)
+                        val imageDirectory = File(jmImgFolder, "JM$albumId").apply { mkdirs() }
+                        val cover = File(imageDirectory, "cover.jpg").let { targetCover ->
+                            targetCover.takeIf(File::isFile) ?: jm.downloadCover(albumId, targetCover)
+                        }
+                        ComicInformationPreview(info, cover)
+                    },
                     search = jm::search,
                     generate = { task -> generateJMComic((task as ComicTask.JMComic).albumId) },
                     deliver = { result, extra -> deliverJMComic(result as ComicTaskResult.JMComic, extra) },
@@ -1742,7 +1857,10 @@ fun main() = runBlocking {
         platformResolver = { AccessController.platform(it.adapterKey()) },
     )
     pluginManager.loadAndEnableAll()
-    val console = JLineConsole(bots.first().first)
+    val console = JLineConsole(
+        bot = bots.first().first,
+        permissionNodeSuggestions = permissionService::suggestions,
+    )
     Runtime.getRuntime().addShutdownHook(Thread({
         runCatching { console.close() }
         pluginManager.close()

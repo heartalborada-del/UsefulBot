@@ -7,6 +7,7 @@ import me.heartalborada.commons.bots.dto.MessageSender
 import me.heartalborada.commons.i18n.Translator
 import me.heartalborada.commons.permissions.PermissionContext
 import me.heartalborada.commons.permissions.PermissionDefault
+import me.heartalborada.commons.permissions.PermissionNodeRegistry
 import me.heartalborada.commons.permissions.PermissionService
 import me.heartalborada.commons.permissions.PermissionSubject
 import me.heartalborada.commons.permissions.PermissionSubjectType
@@ -25,6 +26,9 @@ class PermissionPlugin(
 ) : UsefulBotPlugin {
     override fun onLoad(context: PluginContext) {
         context.registerService(PermissionService::class.java, permissions)
+        (permissions as? PermissionNodeRegistry)?.let {
+            context.registerService(PermissionNodeRegistry::class.java, it)
+        }
         context.registerCommand(
             "permission",
             "perm",
@@ -99,7 +103,7 @@ class PermissionPlugin(
             return
         }
         val rules = permissions.rules(subject).sorted().joinToString().ifEmpty { "-" }
-        val banned = if (subject.type == PermissionSubjectType.USER) {
+        val banned = if (subject.type == PermissionSubjectType.USER && !subject.isWildcard) {
             state.isBanned(AccessController.identity(subject.platform, subject.id)).toString()
         } else {
             "-"
@@ -154,7 +158,7 @@ class PermissionPlugin(
     ) {
         val translator = translatorFor(bot, sender.user.userID)
         val subject = resolveSubject(bot, sender, argument)
-        if (subject == null || subject.type != PermissionSubjectType.USER) {
+        if (subject == null || subject.type != PermissionSubjectType.USER || subject.isWildcard) {
             reply(bot, sender, messageID, translator.translate("permission.invalid_user"))
             return
         }

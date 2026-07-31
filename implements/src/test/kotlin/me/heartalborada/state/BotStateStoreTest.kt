@@ -56,4 +56,22 @@ class BotStateStoreTest {
             directory.deleteRecursively()
         }
     }
+
+    @Test
+    fun `permission subject aliases are normalized and merged`() {
+        val directory = Files.createTempDirectory("permission-alias-state-").toFile()
+        val file = directory.resolve("state.json")
+        try {
+            file.writeText(
+                """{"permissions":{"telegram:*":["feature.read"],"tg:*":["-feature.write"],"napcat:user:7":["feature.read"]}}""",
+            )
+
+            val store = BotStateStore(file)
+
+            assertEquals(setOf("feature.read", "-feature.write"), store.permissions("tg:*"))
+            assertEquals(setOf("feature.read"), store.permissions("qq:user:7"))
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
 }

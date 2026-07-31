@@ -31,6 +31,7 @@ class JLineConsole(
     private val bot: AbstractBot,
     private val terminal: Terminal = TerminalBuilder.builder().system(true).build(),
     private val onStop: () -> Unit = { exitProcess(0) },
+    private val permissionNodeSuggestions: (String) -> List<String> = { emptyList() },
 ) : AutoCloseable {
     private val lineReader: LineReader = LineReaderBuilder.builder()
         .terminal(terminal)
@@ -47,7 +48,12 @@ class JLineConsole(
                     line.words().firstOrNull()?.removePrefix("/"),
                     currentWord,
                 )
-                else -> emptyList()
+                else -> completePermissionNodes(
+                    words = line.words(),
+                    wordIndex = line.wordIndex(),
+                    prefix = currentWord,
+                    suggestions = permissionNodeSuggestions,
+                )
             }
             values.forEach { value -> candidates += Candidate(if (slashPrefixed) "/$value" else value) }
         })
@@ -201,6 +207,21 @@ internal fun completeTopLevelCommands(commands: List<String>, prefix: String): L
         addAll(commands)
         if (STOP_COMMAND.startsWith(prefix, ignoreCase = true)) add(STOP_COMMAND)
     }.distinct().sorted()
+
+internal fun completePermissionNodes(
+    words: List<String>,
+    wordIndex: Int,
+    prefix: String,
+    suggestions: (String) -> List<String>,
+): List<String> {
+    if (wordIndex != 3) return emptyList()
+    val command = words.getOrNull(0)?.removePrefix("/")?.lowercase()
+    val action = words.getOrNull(1)?.lowercase()
+    if (command !in setOf("permission", "perm") || action !in setOf("grant", "deny", "revoke")) {
+        return emptyList()
+    }
+    return suggestions(prefix).distinct().sorted()
+}
 
 private const val STOP_COMMAND = "stop"
 internal const val CLEAR_INPUT_WIDGET = "usefulbot-clear-input"

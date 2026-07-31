@@ -200,11 +200,18 @@ permission grant qq:user:456 usefulbot.admin
 
 权限主体同时包含平台、类型和 ID，因此不同平台以及用户与群不会串权：
 
+- 全局所有主体：`*`
+- QQ 平台所有主体：`qq:*`
+- QQ 全部用户：`qq:user:*`
+- QQ 全部群：`qq:group:*`
 - Telegram 用户：`tg:user:123`
 - Telegram 群：`tg:group:-100`
 - QQ 用户：`qq:user:123`
 - QQ 群：`qq:group:456`
 
+主体按 `* < qq:* < qq:user:* / qq:group:* < 精确主体` 的顺序逐级具体。
+群消息会同时匹配用户分支和群分支，因此不需要也不接受 `qq:group:user:*` 这种嵌套写法。
+`telegram` 与 `tg`、`napcat` 与 `qq` 在读取、写入和旧状态迁移时都会统一成 `tg`、`qq`。
 在当前命令的平台内可以简写成 `user:123`、`group:456`；旧格式 `tg:123`、`qq:123`
 仍兼容并按用户主体解释。`self`/`user` 表示当前用户，`here`/`group` 表示当前群。
 
@@ -219,9 +226,14 @@ permission grant qq:user:456 usefulbot.admin
 /permission unban <用户主体>
 ```
 
-`grant` 写入允许规则，`deny` 写入显式拒绝规则，`revoke` 同时清除该精确节点的允许与拒绝规则。
-群可以配置权限，但不能被封禁。
+交互式终端会在 `permission grant`、`permission deny`、`permission revoke`
+的权限节点参数位置补全当前已注册节点。候选仅包含 `eh.query` 这样的纯节点，
+不附加 `+` 或 `-` 前缀。
 
+`grant` 写入允许规则，`deny` 写入显式拒绝规则，`revoke` 清除该精确节点的所有规则写法。
+群和通配主体可以配置权限，但只有精确用户能够被封禁。
+
+状态文件中的规则可以用 `+` 显式允许、用 `-` 显式拒绝；省略前缀同样表示允许。
 权限节点支持：
 
 - 精确节点：`example.feature.use`
@@ -229,8 +241,11 @@ permission grant qq:user:456 usefulbot.admin
 - 全局通配符：`*`
 - 父节点回退：授权 `example.manage` 会覆盖 `example.manage.reload`
 
-匹配时选择最具体的规则；相同精度同时存在允许和拒绝时，拒绝优先。群聊鉴权依次检查：
-当前用户规则、当前群规则、命令默认策略。`ADMIN` 默认策略最后检查用户的 `usefulbot.admin`。
+匹配时先选择最具体的主体层级，再选择该层最具体的权限节点。用户分支与群分支
+处于同一精度；主体和权限节点精度都相同时，拒绝优先。
+例如，`+a.b.*` 与 `-a.b.c` 会只拒绝 `a.b.c`；
+`-a.b.*` 与 `+a.b.c` 则会只允许这个例外节点。没有规则命中时才使用命令默认策略；
+`ADMIN` 默认策略最后检查用户的 `usefulbot.admin`。
 插件也可以通过 `PermissionService`
 查询或修改权限。
 

@@ -1,6 +1,7 @@
 package me.heartalborada.security
 
 import me.heartalborada.config.ConfigData
+import me.heartalborada.commons.permissions.PermissionSubject
 import me.heartalborada.state.BotStateStore
 import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
@@ -71,10 +72,11 @@ class AccessController(
             return ParsedIdentity(platform, id)
         }
 
-        private fun platformFor(adapter: String): String = when (adapter.trim().lowercase()) {
-            "tg", "telegram", "telegrambot" -> "tg"
-            "qq", "napcat" -> "qq"
-            else -> adapter.trim().lowercase()
-        }
+        private fun platformFor(adapter: String): String =
+            if (adapter.trim().equals("telegrambot", ignoreCase = true)) {
+                "tg"
+            } else {
+                PermissionSubject.normalizePlatform(adapter)
+            }
     }
 }

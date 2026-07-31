@@ -13,6 +13,7 @@ import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
 import me.heartalborada.commons.i18n.Translator
 import me.heartalborada.commons.permissions.PermissionContext
 import me.heartalborada.commons.permissions.PermissionDefault
+import me.heartalborada.commons.permissions.PermissionNodeRegistry
 import me.heartalborada.commons.permissions.PermissionService
 import me.heartalborada.commons.permissions.PermissionSubject
 import org.slf4j.LoggerFactory
@@ -27,6 +28,29 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class PluginContextPermissionTest {
+    @Test
+    fun `registered command permission nodes follow the plugin lifecycle`() {
+        val permissions = RecordingPermissionService { _, _, _ -> true }
+        val fixture = Fixture(permissions)
+        try {
+            fixture.context.registerCommand("hello", usage = "/hello") { _, _, _, _, _ -> }
+            fixture.context.registerCommand("manage", usage = "/manage <action>") {
+                subcommand("reload", usage = "/manage reload") { _, _, _, _, _ -> }
+                subcommand("status", usage = "/manage status", permission = "system.status") {
+                    _, _, _, _, _ ->
+                }
+            }
+
+            assertEquals(
+                listOf("demo.hello", "demo.manage.reload", "system.status"),
+                permissions.suggestions(),
+            )
+        } finally {
+            fixture.close()
+        }
+        assertTrue(permissions.suggestions().isEmpty())
+    }
+
     @Test
     fun `leaf commands use generated nodes and platform scoped user contexts`() {
         val permissions = RecordingPermissionService { _, _, _ -> true }
@@ -144,8 +168,9 @@ class PluginContextPermissionTest {
 
     private class RecordingPermissionService(
         private val decision: (PermissionContext, String, PermissionDefault) -> Boolean,
-    ) : PermissionService {
+    ) : PermissionService, PermissionNodeRegistry {
         val checks = LinkedBlockingQueue<PermissionCheck>()
+        private val nodes = mutableMapOf<String, Int>()
 
         override fun hasPermission(
             context: PermissionContext,
@@ -160,9 +185,21 @@ class PluginContextPermissionTest {
         override fun deny(subject: PermissionSubject, permission: String): Boolean = false
         override fun clear(subject: PermissionSubject, permission: String): Boolean = false
         override fun rules(subject: PermissionSubject): Set<String> = emptySet()
+
+        override fun register(node: String) {
+            nodes[node] = nodes.getOrDefault(node, 0) + 1
+        }
+
+        override fun unregister(node: String) {
+            val count = nodes[node] ?: return
+            if (count <= 1) nodes.remove(node) else nodes[node] = count - 1
+        }
+
+        override fun suggestions(prefix: String): List<String> =
+            nodes.keys.filter { it.startsWith(prefix) }.sorted()
     }
 
-    private class Fixture(permissions: PermissionService) : AutoCloseable {
+    private class Fixture(permissions: RecordingPermissionService) : AutoCloseable {
         private val directory = Files.createTempDirectory("plugin-permission-test-").toFile()
         val bot = FakeBot()
         val context = PluginContext(
@@ -177,6 +214,7 @@ class PluginContextPermissionTest {
 
         init {
             context.registerService(PermissionService::class.java, permissions)
+            context.registerService(PermissionNodeRegistry::class.java, permissions)
             bot.connect()
         }
 

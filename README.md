@@ -193,6 +193,8 @@ Telegram 发送的普通 PDF 和 PDF 分卷均不设置打开密码；NapCat 发
 | `/about` | 显示机器人信息 |
 | `/get eh <链接>` | 下载 E-Hentai / ExHentai 画廊 |
 | `/get jm <车号或链接>` | 下载 JMComic 专辑 |
+| `/query eh <链接>` | 查询 E-Hentai / ExHentai 画廊信息和封面 |
+| `/query jm <车号或链接>` | 查询 JMComic 专辑信息和封面 |
 | `/search eh <关键词>` | 搜索 E-Hentai / ExHentai |
 | `/search jm <关键词>` | 搜索 JMComic |
 | `/checkin` | 每日签到领取 GP |
@@ -214,6 +216,8 @@ Telegram 发送的普通 PDF 和 PDF 分卷均不设置打开密码；NapCat 发
 /get eh https://e-hentai.org/g/123456/abcdef1234/
 /get jm JM123456
 /get jm https://18comic.vip/album/123456/
+/query eh https://e-hentai.org/g/123456/abcdef1234/
+/query jm JM123456
 /search eh --category=manga --min-stars=4 language:chinese
 /search jm --page=2 中文 全彩
 /checkin
