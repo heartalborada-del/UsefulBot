@@ -12,7 +12,9 @@ import me.heartalborada.commons.bots.Reply
 import me.heartalborada.commons.bots.dto.FileInfo
 import me.heartalborada.commons.bots.dto.ForwardMessageNode
 import me.heartalborada.commons.bots.events.message.InlineQueryEvent
+import me.heartalborada.commons.bots.events.message.CallbackQueryEvent
 import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
+import me.heartalborada.commons.bots.events.meta.BotOfflineEvent
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
@@ -243,7 +245,9 @@ class TelegramBotTest {
             autoConnect = false,
         )
         val event = CompletableFuture<PrivateMessageEvent>()
+        val callbackEvent = CompletableFuture<CallbackQueryEvent>()
         bot.getEventBus().register(PrivateMessageEvent::class.java, event::complete)
+        bot.getEventBus().register(CallbackQueryEvent::class.java, callbackEvent::complete)
 
         bot.handleUpdate(
             JsonParser.parseString(
@@ -260,9 +264,89 @@ class TelegramBotTest {
             ).asJsonObject
         )
 
+        val callback = callbackEvent.get(2, TimeUnit.SECONDS)
+        assertEquals("callback-1", callback.queryID)
+        assertEquals("/get jm JM123", callback.data)
+        assertEquals(ChatType.PRIVATE, callback.chatType)
+        assertEquals(42L, callback.chatID)
         assertEquals("/get jm JM123", event.get(2, TimeUnit.SECONDS).message.toString())
         assertEquals(listOf("answerCallbackQuery"), methods)
         bot.close()
+    }
+
+    @Test
+    fun `intercepted callback is not acknowledged or dispatched as a command`() {
+        val methods = mutableListOf<String>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                methods += chain.request().url.pathSegments.last()
+                error("Intercepted callback must not call Telegram")
+            }
+            .build()
+        val bot = TelegramBot(
+            token = "test-token",
+            apiBaseUrl = "https://telegram.test",
+            parentClient = client,
+            autoConnect = false,
+        )
+        val command = CompletableFuture<PrivateMessageEvent>()
+        bot.getEventBus().register(CallbackQueryEvent::class.java) { it.intercept() }
+        bot.getEventBus().register(PrivateMessageEvent::class.java, command::complete)
+
+        bot.handleUpdate(
+            JsonParser.parseString(
+                """
+                    {
+                      "callback_query":{
+                        "id":"callback-2",
+                        "from":{"id":42,"is_bot":false,"first_name":"Alice"},
+                        "data":"/admin status",
+                        "message":{"message_id":10,"date":1700000001,"chat":{"id":42,"type":"private"}}
+                      }
+                    }
+                """.trimIndent(),
+            ).asJsonObject,
+        )
+
+        assertTrue(methods.isEmpty())
+        assertFalse(command.isDone)
+        bot.close()
+    }
+
+    @Test
+    fun `normal close publishes one expected offline event`() {
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val result = when (chain.request().url.pathSegments.last()) {
+                    "getMe" -> """{"id":1,"username":"UsefulBot"}"""
+                    "setMyCommands" -> "true"
+                    "getUpdates" -> "[]"
+                    else -> error("Unexpected Telegram method")
+                }
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body("""{"ok":true,"result":$result}""".toResponseBody("application/json".toMediaType()))
+                    .build()
+            }
+            .build()
+        val bot = TelegramBot(
+            token = "test-token",
+            apiBaseUrl = "https://telegram.test",
+            parentClient = client,
+            autoConnect = false,
+        )
+        val events = mutableListOf<BotOfflineEvent>()
+        bot.getEventBus().register(BotOfflineEvent::class.java) { events += it }
+
+        bot.connect()
+        bot.close()
+
+        assertEquals(1, events.size)
+        assertTrue(events.single().expected)
+        assertEquals("Closed", events.single().reason)
     }
 
     @Test

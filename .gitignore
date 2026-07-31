@@ -46,6 +46,7 @@ bin/
 .DS_Store
 
 data/
+/plugins/
 /error/
 Test.kt
 /.idea/dataSources.xml

@@ -1,5 +1,6 @@
 package me.heartalborada.commons.bots
 
+import kotlinx.coroutines.runBlocking
 import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.dto.MessageSender
 import me.heartalborada.commons.bots.dto.ForwardMessageNode
@@ -10,12 +11,14 @@ import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
 import me.heartalborada.commons.commands.CommandExecutor
 import me.heartalborada.commons.commands.CommandErrorHandler
 import me.heartalborada.commons.i18n.Translator
+import me.heartalborada.commons.permissions.PermissionDefault
 import java.io.File
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
@@ -225,6 +228,43 @@ class AbstractBotCommandTest {
         assertEquals("root cause", error.message)
         val reply = bot.sent.poll(2, TimeUnit.SECONDS)
         assertTrue((reply[1] as PlainText).text.contains("error/test.err.log"))
+    }
+
+    @Test
+    fun `console executes and completes only commands with the console flag`() = runBlocking {
+        val bot = FakeBot()
+        val output = mutableListOf<String>()
+        bot.registerCommand("chat", usage = "/chat") { _, _, _, _ -> error("must not execute") }
+        bot.registerCommand(
+            "status",
+            "st",
+            usage = "/status",
+            permissionDefault = PermissionDefault.ALLOW or PermissionDefault.ALLOWCONSOLE,
+        ) { sender, _, _, _ ->
+            bot.sendCommandMessage(sender, MessageChain.text("ready"))
+        }
+        bot.registerCommand("admin", usage = "/admin <action>") {
+            subcommand(
+                "reload",
+                "r",
+                usage = "/admin reload",
+                permissionDefault = PermissionDefault.DENY or PermissionDefault.ALLOW_CONSOLE,
+            ) { sender, _, _, _ ->
+                bot.sendCommandMessage(sender, MessageChain.text("reloaded"))
+            }
+            subcommand("hidden", usage = "/admin hidden") { _, _, _, _ -> error("must not execute") }
+        }
+
+        assertEquals(listOf("st", "status"), bot.completeConsoleCommand(null, "st"))
+        assertEquals(listOf("r", "reload"), bot.completeConsoleCommand("admin", "r"))
+        assertTrue(bot.executeConsoleCommand("status") { output += it })
+        assertTrue(bot.executeConsoleCommand("/admin r") { output += it })
+        assertFalse(bot.executeConsoleCommand("chat") { output += it })
+        assertEquals(
+            listOf("ready", "reloaded", "Command is not available from the console."),
+            output,
+        )
+        assertTrue(bot.sent.isEmpty())
     }
 
     private fun executor(

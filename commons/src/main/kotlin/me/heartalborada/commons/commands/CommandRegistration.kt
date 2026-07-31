@@ -1,11 +1,14 @@
 package me.heartalborada.commons.commands
 
+import me.heartalborada.commons.permissions.PermissionDefault
+
 @DslMarker
 annotation class CommandRegistrationDsl
 
 internal class SubcommandDefinition(
     val commands: List<String>,
     val usage: String,
+    val permissionDefault: PermissionDefault,
     val executor: CommandExecutor,
 )
 
@@ -22,11 +25,13 @@ class SubcommandBuilder internal constructor() {
     fun subcommand(
         vararg commands: String,
         usage: String,
+        permissionDefault: PermissionDefault = PermissionDefault.ALLOW,
         executor: CommandExecutor,
     ) {
         definitions += SubcommandDefinition(
             commands = commands.toList(),
             usage = usage,
+            permissionDefault = permissionDefault,
             executor = executor,
         )
     }

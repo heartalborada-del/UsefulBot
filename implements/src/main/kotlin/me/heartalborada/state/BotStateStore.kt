@@ -56,6 +56,7 @@ private data class DailyUsage(val date: String, val count: Int)
 
 private data class BotState(
     val bannedUsers: MutableSet<String> = mutableSetOf(),
+    val permissions: MutableMap<String, MutableSet<String>> = mutableMapOf(),
     val preferences: MutableMap<String, UserPreference> = mutableMapOf(),
     val dailyUsage: MutableMap<String, DailyUsage> = mutableMapOf(),
     val pendingTasks: MutableMap<String, PersistentTask> = mutableMapOf(),
@@ -73,8 +74,31 @@ class BotStateStore(private val file: File) {
     fun setBanned(identity: String, banned: Boolean) {
         val normalized = identity.trim().lowercase()
         require(normalized.isNotEmpty()) { "Identity must not be blank." }
-        if (banned) state.bannedUsers.add(normalized) else state.bannedUsers.remove(normalized)
-        save()
+        val changed = if (banned) state.bannedUsers.add(normalized) else state.bannedUsers.remove(normalized)
+        if (changed) save()
+    }
+
+    @Synchronized
+    fun permissions(identity: String): Set<String> =
+        state.permissions[identity.trim().lowercase()]?.toSet().orEmpty()
+
+    @Synchronized
+    fun setPermissionRule(subject: String, permission: String, effect: Boolean?): Boolean {
+        val normalizedIdentity = subject.trim().lowercase()
+        val normalizedPermission = permission.trim().lowercase()
+        require(normalizedIdentity.isNotEmpty()) { "Identity must not be blank." }
+        require(normalizedPermission.isNotEmpty()) { "Permission must not be blank." }
+        val current = state.permissions.getOrPut(normalizedIdentity) { mutableSetOf() }
+        val allowRule = normalizedPermission
+        val denyRule = "-$normalizedPermission"
+        val changed = when (effect) {
+            true -> current.remove(denyRule) or current.add(allowRule)
+            false -> current.remove(allowRule) or current.add(denyRule)
+            null -> current.remove(allowRule) or current.remove(denyRule)
+        }
+        if (current.isEmpty()) state.permissions.remove(normalizedIdentity)
+        if (changed) save()
+        return changed
     }
 
     @Synchronized
@@ -187,6 +211,19 @@ class BotStateStore(private val file: File) {
                     }
                 }
                 root.add("bannedUsers", normalized)
+            }
+            root.getAsJsonObject("permissions")?.let { existing ->
+                val normalized = com.google.gson.JsonObject()
+                existing.entrySet().forEach { (key, rules) ->
+                    val parts = key.trim().lowercase().split(':')
+                    val normalizedKey = if (parts.size == 2 && parts[1].toLongOrNull() != null) {
+                        "${parts[0]}:user:${parts[1]}"
+                    } else {
+                        key.trim().lowercase()
+                    }
+                    normalized.add(normalizedKey, rules.deepCopy())
+                }
+                root.add("permissions", normalized)
             }
             val defaults = gson.toJsonTree(BotState()).asJsonObject
             defaults.entrySet().forEach { (key, value) ->

@@ -91,6 +91,8 @@ internal object ConfigMigration {
                 7 -> migrateV7ToV8(root)
                 8 -> Unit
                 9 -> migrateV9ToV10(root)
+                10 -> Unit
+                11 -> migrateV11ToV12(root)
                 else -> error("No config migration is available for version $version.")
             }
             version++
@@ -195,6 +197,15 @@ internal object ConfigMigration {
                 }
             }
         }
+    }
+
+    private fun migrateV11ToV12(root: JsonObject) {
+        val access = root.get("Access")
+            ?.takeIf { it.isJsonObject }
+            ?.asJsonObject
+            ?: return
+        listOf("AdminUserIds", "AllowedUserIds", "AllowedChatIds", "BlockedUserIds")
+            .forEach(access::remove)
     }
 
     private fun normalizeSection(parent: JsonObject, canonicalName: String, legacyName: String): JsonObject {

@@ -8,7 +8,6 @@ import java.util.concurrent.ConcurrentHashMap
 enum class AccessDecision {
     ALLOWED,
     BLOCKED,
-    NOT_ALLOWED,
     RATE_LIMITED,
 }
 
@@ -19,34 +18,17 @@ class AccessController(
 ) {
     private val requests = ConcurrentHashMap<String, ArrayDeque<Long>>()
 
-    fun isAdmin(adapter: String, userId: Long): Boolean =
-        matches(config.adminUserIds, adapter, userId)
-
-    fun check(adapter: String, userId: Long, chatId: Long): AccessDecision {
-        if (isAdmin(adapter, userId)) return AccessDecision.ALLOWED
+    fun check(adapter: String, userId: Long, @Suppress("UNUSED_PARAMETER") chatId: Long): AccessDecision {
         val userIdentity = identity(adapter, userId)
-        if (state.isBanned(userIdentity) || matches(config.blockedUserIds, adapter, userId)) {
+        if (state.isBanned(userIdentity)) {
             return AccessDecision.BLOCKED
-        }
-        if (config.allowedUserIds.isNotEmpty() && !matches(config.allowedUserIds, adapter, userId)) {
-            return AccessDecision.NOT_ALLOWED
-        }
-        if (config.allowedChatIds.isNotEmpty() && !matches(config.allowedChatIds, adapter, chatId)) {
-            return AccessDecision.NOT_ALLOWED
         }
         if (!acquire(userIdentity)) return AccessDecision.RATE_LIMITED
         return AccessDecision.ALLOWED
     }
 
     fun consumeDownload(adapter: String, userId: Long): Boolean =
-        isAdmin(adapter, userId) || state.consumeDailyDownload(adapter, userId, config.dailyDownloadLimit)
-
-    fun adminTargets(adapter: String): List<Long> = config.adminUserIds.mapNotNull { value ->
-        parse(value)?.takeIf { it.matches(adapter, it.id) }?.id
-    }.distinct()
-
-    private fun matches(entries: Collection<String>, adapter: String, id: Long): Boolean =
-        entries.any { value -> parse(value)?.matches(adapter, id) == true }
+        state.consumeDailyDownload(adapter, userId, config.dailyDownloadLimit)
 
     private fun acquire(key: String): Boolean {
         if (config.commandsPerMinute <= 0) return true
@@ -61,13 +43,12 @@ class AccessController(
         }
     }
 
-    private data class ParsedIdentity(val platform: String?, val id: Long) {
-        fun matches(adapter: String, candidateId: Long): Boolean =
-            id == candidateId && (platform == null || platform == platformFor(adapter))
-    }
+    private data class ParsedIdentity(val platform: String?, val id: Long)
 
     companion object {
         fun identity(adapter: String, id: Long): String = "${platformFor(adapter)}:$id"
+
+        fun platform(adapter: String): String = platformFor(adapter)
 
         fun normalizeScopedIdentity(value: String): String? {
             val parsed = parse(value) ?: return null

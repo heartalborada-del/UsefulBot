@@ -14,12 +14,9 @@ data class ConfigData @JvmOverloads constructor(
     @SerializedName("Cache") val cache: Cache = Cache(),
     @SerializedName("DeliveryRetry") val deliveryRetry: DeliveryRetry = DeliveryRetry(),
     @SerializedName("Batch") val batch: Batch = Batch(),
+    @SerializedName("Plugins") val plugins: Plugins = Plugins(),
 ) {
     data class Access @JvmOverloads constructor(
-        @SerializedName("AdminUserIds") val adminUserIds: List<String> = emptyList(),
-        @SerializedName("AllowedUserIds") val allowedUserIds: List<String> = emptyList(),
-        @SerializedName("AllowedChatIds") val allowedChatIds: List<String> = emptyList(),
-        @SerializedName("BlockedUserIds") val blockedUserIds: List<String> = emptyList(),
         @SerializedName("CommandsPerMinute") val commandsPerMinute: Int = 20,
         @SerializedName("DailyDownloadLimit") val dailyDownloadLimit: Int = 20,
     )
@@ -45,6 +42,12 @@ data class ConfigData @JvmOverloads constructor(
     data class Batch @JvmOverloads constructor(
         @SerializedName("Enabled") val enabled: Boolean = false,
         @SerializedName("MaxItems") val maxItems: Int = 10,
+    )
+
+    data class Plugins @JvmOverloads constructor(
+        @SerializedName("Enabled") val enabled: Boolean = true,
+        @SerializedName("Directory") val directory: String = "plugins",
+        @SerializedName("Disabled") val disabled: List<String> = emptyList(),
     )
 
     data class Bot @JvmOverloads constructor(
@@ -123,7 +126,7 @@ data class ConfigData @JvmOverloads constructor(
     )
 
     companion object {
-        const val CURRENT_VERSION = 10
+        const val CURRENT_VERSION = 12
     }
 }
 

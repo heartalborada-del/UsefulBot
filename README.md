@@ -98,10 +98,6 @@ java -jar ./implements/build/libs/UsefulBot-1.3.0.jar --resolve-dependencies-onl
   },
   "ComicParallelCount": 2,
   "Access": {
-    "AdminUserIds": ["tg:123456789", "qq:10001"],
-    "AllowedUserIds": [],
-    "AllowedChatIds": ["tg:-1001234567890", "qq:123456"],
-    "BlockedUserIds": [],
     "CommandsPerMinute": 20,
     "DailyDownloadLimit": 20
   },
@@ -139,11 +135,11 @@ java -jar ./implements/build/libs/UsefulBot-1.3.0.jar --resolve-dependencies-onl
 
 ### 访问与运行策略
 
-- 访问控制 ID 使用 `tg:<id>` 或 `qq:<id>`，避免 Telegram 与 QQ 的数字 ID 冲突；旧版纯数字会作为跨平台兼容项读取，但不建议继续使用。
-- `Access.AdminUserIds`：可使用 `/health` 和 `/admin` 的用户 ID；空列表表示没有管理员，非管理员的 `/help` 不显示这些命令。
-- `AllowedUserIds` / `AllowedChatIds`：非空时启用对应白名单；管理员始终可以访问。
 - `CommandsPerMinute` 和 `DailyDownloadLimit`：`0` 表示不限制。
-- `Tasks.StateFile` 保存待恢复任务、失败补发、动态封禁、每日额度和用户偏好。
+- 用户、群和多平台访问由内置 `permissions` 插件管理；`Tasks.StateFile` 保存权限、动态封禁、待恢复任务、失败补发、每日额度和用户偏好。
+- 首次启动可在 JLine 控制台执行 `permission grant tg:user:<id> usefulbot.admin`（QQ 使用 `qq:user:<id>`）授予管理员权限。
+- 控制台只补全并执行显式包含 `ALLOW_CONSOLE` 的命令；当前包括 `health`、`admin` 和 `permission` 的管理子命令。
+- `permissions` 是基础内置插件，不能通过 `Plugins.Disabled` 或运行时卸载关闭；EH、JM 等功能插件仍可单独禁用。
 - `Cache` 控制 PDF 总容量、保留天数、清理周期及低磁盘告警阈值。
 - `Batch.Enabled` 默认为 `false`；只有设为 `true` 时才注册 `/batch` 并同步到 Telegram 菜单。
 

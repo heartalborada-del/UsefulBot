@@ -13,6 +13,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.AbstractBot
 import me.heartalborada.commons.bots.AbstractMessageObject
@@ -30,8 +31,11 @@ import me.heartalborada.commons.bots.dto.InlineQueryResult
 import me.heartalborada.commons.bots.dto.UserInfo
 import me.heartalborada.commons.bots.events.EventBus
 import me.heartalborada.commons.bots.events.message.GroupMessageEvent
+import me.heartalborada.commons.bots.events.message.CallbackQueryEvent
 import me.heartalborada.commons.bots.events.message.InlineQueryEvent
 import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
+import me.heartalborada.commons.bots.events.meta.BotOnlineEvent
+import me.heartalborada.commons.bots.events.meta.BotOfflineEvent
 import me.heartalborada.commons.i18n.Translator
 import me.heartalborada.i18n.PropertiesTranslator
 import okhttp3.MediaType.Companion.toMediaType
@@ -68,6 +72,7 @@ class TelegramBot(
     private val gson = Gson()
     private val eventBus = EventBus()
     private val connected = AtomicBoolean(false)
+    private val offlinePublished = AtomicBoolean(true)
     private val validatedUploadTimeoutMinutes = uploadTimeoutMinutes.also {
         require(it > 0) { "Telegram upload timeout must be positive." }
     }
@@ -103,6 +108,8 @@ class TelegramBot(
             val me = call("getMe").asJsonObject
             botID = me["id"].asLong
             botUsername = me.get("username")?.asString.orEmpty()
+            offlinePublished.set(false)
+            eventBus.broadcast(BotOnlineEvent(botID, Instant.now().epochSecond))
             runCatching(::synchronizeCommands)
                 .onFailure { logger.warn("Failed to register Telegram bot commands; polling will continue.", it) }
             pollingScope.launch { pollUpdates() }
@@ -114,8 +121,9 @@ class TelegramBot(
     }
 
     override fun close(): Boolean {
-        connected.set(false)
+        val wasConnected = connected.getAndSet(false)
         pollingScope.cancel()
+        if (wasConnected) publishOffline(expected = true, reason = "Closed")
         super.close()
         return true
     }
@@ -216,6 +224,15 @@ class TelegramBot(
             nextOffset?.let { addProperty("next_offset", it.take(64)) }
         }
         return call("answerInlineQuery", params).asBoolean
+    }
+
+    override fun answerCallbackQuery(queryID: String, text: String?, showAlert: Boolean): Boolean {
+        require(queryID.isNotBlank()) { "Telegram callback query ID must not be blank." }
+        return call("answerCallbackQuery", JsonObject().apply {
+            addProperty("callback_query_id", queryID)
+            text?.takeIf(String::isNotBlank)?.let { addProperty("text", it) }
+            if (showAlert) addProperty("show_alert", true)
+        }).asBoolean
     }
 
     internal fun synchronizeCommands(): Boolean {
@@ -393,12 +410,37 @@ class TelegramBot(
         val command = callback.get("data")?.asString ?: return
         val message = callback.getAsJsonObject("message") ?: return
         val from = callback.getAsJsonObject("from") ?: return
-        call("answerCallbackQuery", JsonObject().apply { addProperty("callback_query_id", callbackID) })
+        val chat = message.getAsJsonObject("chat") ?: return
+        val chatType = when (chat.get("type")?.asString) {
+            "private" -> ChatType.PRIVATE
+            "group", "supergroup" -> ChatType.GROUP
+            else -> return
+        }
+        val event = CallbackQueryEvent(
+            botID = botID,
+            timestamp = message.get("date")?.asLong ?: Instant.now().epochSecond,
+            queryID = callbackID,
+            sender = from.toUserInfo(),
+            data = command,
+            chatType = chatType,
+            chatID = chat["id"].asLong,
+            messageID = message["message_id"].asLong,
+        )
+        runBlocking { eventBus.publish(event) }
+        if (event.isIntercepted) return
+        answerCallbackQuery(callbackID)
         val synthetic = message.deepCopy().apply {
             addProperty("text", command)
             add("from", from)
         }
         handleMessage(synthetic)
+    }
+
+    private fun publishOffline(expected: Boolean, reason: String?) {
+        if (botID == 0L || !offlinePublished.compareAndSet(false, true)) return
+        runBlocking {
+            eventBus.publish(BotOfflineEvent(botID, Instant.now().epochSecond, expected, reason))
+        }
     }
 
     private fun JsonObject.toUserInfo(): UserInfo {

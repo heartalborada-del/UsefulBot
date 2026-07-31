@@ -1,5 +1,6 @@
 package me.heartalborada.commons.bots.events
 
+/** Thread-safe implementation of the interception state shared by built-in events. */
 abstract class AbstractEvent : Event {
     @Volatile
     private var _intercepted: Boolean = false

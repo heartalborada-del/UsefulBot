@@ -19,6 +19,11 @@ dependencies {
     implementation("org.apache.logging.log4j:log4j-slf4j2-impl:2.26.1")
     implementation("com.google.guava:guava:33.6.0-jre")
     implementation("com.h2database:h2:2.4.240")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.19.2")
+    implementation("org.apache.maven:maven-resolver-provider:3.9.9")
+    implementation("org.apache.maven.resolver:maven-resolver-connector-basic:1.9.22")
+    implementation("org.apache.maven.resolver:maven-resolver-transport-http:1.9.22")
+    implementation("org.jline:jline:3.30.6")
 }
 
 val loaderResourcesDirectory = layout.buildDirectory.dir("generated/loader-resources")
@@ -93,6 +98,7 @@ tasks {
         }
         duplicatesStrategy = DuplicatesStrategy.INCLUDE
         mergeServiceFiles()
+        append("META-INF/sisu/javax.inject.Named")
         append("META-INF/DEPENDENCIES")
         append("META-INF/LICENSE")
         append("META-INF/LICENSE.txt")

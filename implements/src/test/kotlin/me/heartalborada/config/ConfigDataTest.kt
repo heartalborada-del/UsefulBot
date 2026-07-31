@@ -265,7 +265,7 @@ class ConfigDataTest {
     }
 
     @Test
-    fun `version nine access IDs are upgraded to strings`() {
+    fun `legacy access lists are removed during upgrade`() {
         val configFile = Files.createTempFile("useful-bot-v9-config-", ".json").toFile()
         try {
             configFile.writeText(
@@ -275,12 +275,12 @@ class ConfigDataTest {
             val config = Config(configFile).getConfig()
 
             assertEquals(ConfigData.CURRENT_VERSION, config.version)
-            assertEquals(listOf("7"), config.access.adminUserIds)
-            assertEquals(listOf("8"), config.access.allowedUserIds)
-            assertEquals(listOf("-9"), config.access.allowedChatIds)
-            assertEquals(listOf("10"), config.access.blockedUserIds)
             val access = JsonParser.parseString(configFile.readText()).asJsonObject.getAsJsonObject("Access")
-            assertTrue(access.getAsJsonArray("AdminUserIds")[0].asJsonPrimitive.isString)
+            assertFalse(access.has("AdminUserIds"))
+            assertFalse(access.has("AllowedUserIds"))
+            assertFalse(access.has("AllowedChatIds"))
+            assertFalse(access.has("BlockedUserIds"))
+            assertEquals(20, config.access.commandsPerMinute)
         } finally {
             configFile.delete()
         }
@@ -332,6 +332,25 @@ class ConfigDataTest {
                     .get("MaxArchiveSizeMiB")
                     .asLong,
             )
+        } finally {
+            configFile.delete()
+        }
+    }
+
+    @Test
+    fun `version ten config gains plugin settings`() {
+        val configFile = Files.createTempFile("useful-bot-v10-config-", ".json").toFile()
+        try {
+            configFile.writeText("""{"version":10}""")
+
+            val config = Config(configFile).getConfig()
+
+            assertEquals(ConfigData.CURRENT_VERSION, config.version)
+            assertTrue(config.plugins.enabled)
+            assertEquals("plugins", config.plugins.directory)
+            assertTrue(config.plugins.disabled.isEmpty())
+            val plugins = JsonParser.parseString(configFile.readText()).asJsonObject.getAsJsonObject("Plugins")
+            assertTrue(plugins.get("Enabled").asBoolean)
         } finally {
             configFile.delete()
         }

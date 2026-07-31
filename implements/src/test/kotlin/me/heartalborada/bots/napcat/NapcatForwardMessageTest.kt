@@ -8,6 +8,7 @@ import me.heartalborada.commons.bots.At
 import me.heartalborada.commons.bots.MessageChain
 import me.heartalborada.commons.bots.PlainText
 import me.heartalborada.commons.bots.dto.ForwardMessageNode
+import me.heartalborada.commons.bots.events.request.GroupAddRequestEvent
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -82,5 +83,25 @@ class NapcatForwardMessageTest {
         val nodes = params["messages"] as com.google.gson.JsonArray
         val data = nodes.single().asJsonObject.getAsJsonObject("data")
         assertEquals(987654321L, data["user_id"].asLong)
+    }
+
+    @Test
+    fun `builds OneBot friend and group request responses`() {
+        assertEquals(
+            mapOf("flag" to "friend-token", "approve" to true, "remark" to "Alice"),
+            buildFriendRequestResponseParams("friend-token", approve = true, remark = "Alice"),
+        )
+        assertEquals(
+            mapOf("flag" to "group-token", "sub_type" to "invite", "approve" to false, "reason" to "No"),
+            buildGroupRequestResponseParams(
+                "group-token",
+                GroupAddRequestEvent.ActionType.INVITE,
+                approve = false,
+                reason = "No",
+            ),
+        )
+        assertFailsWith<IllegalArgumentException> {
+            buildFriendRequestResponseParams(" ", approve = true, remark = null)
+        }
     }
 }

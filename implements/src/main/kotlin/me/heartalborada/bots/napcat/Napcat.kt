@@ -23,6 +23,7 @@ import me.heartalborada.commons.bots.events.EventBus
 import me.heartalborada.commons.bots.events.message.GroupMessageEvent
 import me.heartalborada.commons.bots.events.message.PrivateMessageEvent
 import me.heartalborada.commons.bots.events.meta.BotOnlineEvent
+import me.heartalborada.commons.bots.events.meta.BotOfflineEvent
 import me.heartalborada.commons.bots.events.meta.HeartBeatEvent
 import me.heartalborada.commons.bots.events.notice.*
 import me.heartalborada.commons.bots.events.request.FriendAddRequestEvent
@@ -58,6 +59,7 @@ class Napcat(
 ) : AbstractBot(commandStartWithAt, commandOperator, commandDivider, translator) {
     private val logger: Logger = LoggerFactory.getLogger(this::class.java)
     private val connected = AtomicBoolean(false)
+    private val offlinePublished = AtomicBoolean(true)
     private var eventWS: WebSocket? = null
     private var apiWS: WebSocket? = null
     private var httpClient = OkHttpClient.Builder().build()
@@ -77,7 +79,8 @@ class Napcat(
     }
 
     override fun close(): Boolean {
-        connected.set(false)
+        val wasConnected = connected.getAndSet(false)
+        if (wasConnected) publishOffline(expected = true, reason = "Closed")
         super.close()
         apiScope.cancel()
         val eventClosed = eventWS?.close(1000, "Close") ?: true
@@ -107,6 +110,22 @@ class Napcat(
     override fun getEventBus(): EventBus {
         return eventBus
     }
+
+    override fun respondFriendRequest(requestFlag: String, approve: Boolean, remark: String?): Boolean =
+        callOneBotAction(
+            "set_friend_add_request",
+            buildFriendRequestResponseParams(requestFlag, approve, remark),
+        )
+
+    override fun respondGroupRequest(
+        requestFlag: String,
+        requestType: GroupAddRequestEvent.ActionType,
+        approve: Boolean,
+        reason: String?,
+    ): Boolean = callOneBotAction(
+        "set_group_add_request",
+        buildGroupRequestResponseParams(requestFlag, requestType, approve, reason),
+    )
 
     override fun sendMessage(type: ChatType, id: Long, message: MessageChain): Long {
         logger.info("[Send] {} -> [{}] [{}] {}", botID, type.name, id, message.toString())
@@ -485,7 +504,7 @@ class Napcat(
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             logger.info("Disconnected from $wsURL")
             eventWS?.close(1000, "Close")
-            connected.set(false)
+            if (connected.getAndSet(false)) publishOffline(expected = false, reason = reason)
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -508,6 +527,7 @@ class Napcat(
                             "lifecycle" -> {
                                 when (root.getAsJsonPrimitive("sub_type").asString) {
                                     "connect" -> {
+                                        offlinePublished.set(false)
                                         val event = BotOnlineEvent(botID, ts)
                                         eventBus.broadcast(event)
                                     }
@@ -656,7 +676,25 @@ class Napcat(
                                         val event = GroupPokeEvent(botID, ts, groupID, userID, targetID)
                                         eventBus.broadcast(event)
                                     }
-                                    //TODO MORE
+
+                                    "lucky_king" -> {
+                                        val groupID = root.getAsJsonPrimitive("group_id").asLong
+                                        val userID = root.getAsJsonPrimitive("user_id").asLong
+                                        val targetID = root.getAsJsonPrimitive("target_id").asLong
+                                        eventBus.broadcast(GroupLuckyKingEvent(botID, ts, groupID, userID, targetID))
+                                    }
+
+                                    "honor" -> {
+                                        val groupID = root.getAsJsonPrimitive("group_id").asLong
+                                        val userID = root.getAsJsonPrimitive("user_id").asLong
+                                        val honorType = root.getAsJsonPrimitive("honor_type").asString
+                                        eventBus.broadcast(GroupHonorChangeEvent(botID, ts, groupID, userID, honorType))
+                                    }
+
+                                    else -> logger.debug(
+                                        "Unknown notify subtype: {}",
+                                        root.getAsJsonPrimitive("sub_type").asString,
+                                    )
                                 }
                             }
 
@@ -669,7 +707,8 @@ class Napcat(
                             "friend" -> {
                                 val userID = root.getAsJsonPrimitive("user_id").asLong
                                 val comment = root.getAsJsonPrimitive("comment").asString
-                                val event = FriendAddRequestEvent(botID, ts, userID, comment)
+                                val flag = root.getAsJsonPrimitive("flag")?.asString.orEmpty()
+                                val event = FriendAddRequestEvent(botID, ts, userID, comment, flag)
                                 eventBus.broadcast(event)
                             }
 
@@ -682,7 +721,8 @@ class Napcat(
                                 } else {
                                     GroupAddRequestEvent.ActionType.ADD
                                 }
-                                val event = GroupAddRequestEvent(botID, ts, groupID, userID, type, comment)
+                                val flag = root.getAsJsonPrimitive("flag")?.asString.orEmpty()
+                                val event = GroupAddRequestEvent(botID, ts, groupID, userID, type, comment, flag)
                                 eventBus.broadcast(event)
                             }
 
@@ -701,7 +741,7 @@ class Napcat(
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             logger.error("An unexpected error occurred.", t)
-            connected.set(false)
+            if (connected.getAndSet(false)) publishOffline(expected = false, reason = t.message)
             logger.warn("NapCat event connection failed; other bot adapters will keep running.")
         }
     }
@@ -728,6 +768,66 @@ class Napcat(
             }
             logger.error("An unexpected error occurred.", t)
         }
+    }
+
+    private fun callOneBotAction(action: String, params: Map<String, Any>): Boolean = runBlocking {
+        withContext(botContext) {
+            mutex.withLock {
+                val requestID = UUID.randomUUID().toString()
+                val response = try {
+                    val deferred = CompletableDeferred<String>()
+                    pendingReqs[requestID] = deferred
+                    check(apiWS?.send(gson.toJson(ApiCommon(action, requestID, params))) == true) {
+                        "Failed to send OneBot action $action"
+                    }
+                    withTimeoutOrNull(5_000.milliseconds) { deferred.await() }
+                        ?: throw IOException("Timeout while executing OneBot action $action")
+                } finally {
+                    pendingReqs.remove(requestID)
+                }
+                val root = JsonParser.parseString(response).asJsonObject
+                val code = root.getAsJsonPrimitive("retcode")?.asInt ?: -1
+                check(code == 0) {
+                    "OneBot action $action failed with code $code: ${root.get("message")?.asString.orEmpty()}"
+                }
+                true
+            }
+        }
+    }
+
+    private fun publishOffline(expected: Boolean, reason: String?) {
+        if (botID == 0L || !offlinePublished.compareAndSet(false, true)) return
+        runBlocking {
+            eventBus.publish(BotOfflineEvent(botID, System.currentTimeMillis() / 1_000, expected, reason))
+        }
+    }
+}
+
+internal fun buildFriendRequestResponseParams(
+    requestFlag: String,
+    approve: Boolean,
+    remark: String?,
+): Map<String, Any> {
+    require(requestFlag.isNotBlank()) { "Friend request flag must not be blank." }
+    return buildMap {
+        put("flag", requestFlag)
+        put("approve", approve)
+        remark?.let { put("remark", it) }
+    }
+}
+
+internal fun buildGroupRequestResponseParams(
+    requestFlag: String,
+    requestType: GroupAddRequestEvent.ActionType,
+    approve: Boolean,
+    reason: String?,
+): Map<String, Any> {
+    require(requestFlag.isNotBlank()) { "Group request flag must not be blank." }
+    return buildMap {
+        put("flag", requestFlag)
+        put("sub_type", requestType.name.lowercase(Locale.ROOT))
+        put("approve", approve)
+        reason?.let { put("reason", it) }
     }
 }
 

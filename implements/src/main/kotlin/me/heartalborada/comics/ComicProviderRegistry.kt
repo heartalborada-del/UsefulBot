@@ -17,4 +17,10 @@ class ComicProviderRegistry<P : Any> {
 
     fun resolve(id: String): P? = aliases[id.trim().lowercase()]?.let(providers::get)
     fun entries(): List<Pair<String, P>> = providers.entries.map { it.key to it.value }
+
+    fun unregister(id: String): P? {
+        val canonical = id.trim().lowercase()
+        aliases.entries.removeAll { it.value == canonical }
+        return providers.remove(canonical)
+    }
 }

@@ -1,6 +1,7 @@
 import com.google.common.cache.CacheBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -41,15 +42,26 @@ import me.heartalborada.commons.economic.ComicPricing
 import me.heartalborada.commons.economic.EconomicManager
 import me.heartalborada.commons.economic.tables.UsersTable
 import me.heartalborada.commons.i18n.Translator
+import me.heartalborada.commons.permissions.PermissionContext
+import me.heartalborada.commons.permissions.PermissionDefault
+import me.heartalborada.commons.permissions.PermissionSubject
+import me.heartalborada.commons.permissions.PermissionSubjectType
 import me.heartalborada.commands.parseSearchCommandArguments
 import me.heartalborada.commons.okhttp.CookieStorageProvider
 import me.heartalborada.commons.queue.ProcessingQueue
 import me.heartalborada.config.Config
 import me.heartalborada.config.LargeFilePolicy
+import me.heartalborada.console.JLineConsole
 import me.heartalborada.i18n.PropertiesTranslator
 import me.heartalborada.errors.CommandErrorLogger
 import me.heartalborada.security.AccessController
 import me.heartalborada.security.AccessDecision
+import me.heartalborada.plugins.PluginManager
+import me.heartalborada.plugins.BuiltInPlugin
+import me.heartalborada.plugins.PluginDescriptor
+import me.heartalborada.plugins.builtin.BuiltInComicProviderPlugin
+import me.heartalborada.plugins.builtin.PermissionPlugin
+import me.heartalborada.permissions.PersistentPermissionService
 import me.heartalborada.state.BotStateStore
 import me.heartalborada.state.OutboxDelivery
 import me.heartalborada.state.PersistentSubscriber
@@ -183,7 +195,7 @@ private fun preference(bot: AbstractBot, userId: Long): UserPreference =
     stateStore.preference(bot.adapterKey(), userId)
 
 private fun AbstractBot.reply(sender: MessageSender, messageID: Long, text: String): Long {
-    return sendMessage(sender.type, sender.target, MessageChain.replyTo(messageID, text))
+    return sendCommandMessage(sender, MessageChain.replyTo(messageID, text))
 }
 
 private fun listComicPages(directory: File): List<File> {
@@ -1003,29 +1015,11 @@ fun main() = runBlocking {
         val generate: suspend (ComicTask) -> ComicTaskResult,
         val deliver: (ComicTaskResult, QueueExtraData) -> Unit,
     )
-    val providers = ComicProviderRegistry<ProviderDefinition>().apply {
-        register(
-            "eh",
-            ProviderDefinition(
-                parse = { ComicTask.EHentai(eh.parseUrl(it)) },
-                search = eh::search,
-                generate = { task -> generateEHentai((task as ComicTask.EHentai).gallery) },
-                deliver = { result, extra -> deliverEHentai(result as ComicTaskResult.EHentai, extra) },
-            ),
-            "ex",
-        )
-        register(
-            "jm",
-            ProviderDefinition(
-                parse = { ComicTask.JMComic(jm.parseUrl(it)) },
-                search = jm::search,
-                generate = { task -> generateJMComic((task as ComicTask.JMComic).albumId) },
-                deliver = { result, extra -> deliverJMComic(result as ComicTaskResult.JMComic, extra) },
-            ),
-        )
-    }
+    val providers = ComicProviderRegistry<ProviderDefinition>()
+    val permissionService = PersistentPermissionService(stateStore)
     val cacheJanitor = CacheJanitor()
     val connectedAdapters = ConcurrentHashMap.newKeySet<String>()
+    lateinit var pluginManager: PluginManager
 
     fun runCacheCleanup() = cacheJanitor.clean(
         roots = listOf(ehPdfFolder, jmPdfFolder),
@@ -1035,13 +1029,44 @@ fun main() = runBlocking {
     )
 
     fun probe(url: String): String = runCatching {
-        client.newBuilder().callTimeout(8, TimeUnit.SECONDS).build()
+        client.newBuilder().callTimeout(HEALTH_PROBE_TIMEOUT_SECONDS, TimeUnit.SECONDS).build()
             .newCall(Request.Builder().url(url).get().build())
             .execute()
             .use { response -> "HTTP ${response.code}" }
     }.getOrElse { "unreachable (${it::class.simpleName})" }
 
     fun configureBot(bot: AbstractBot, blurImages: Boolean) {
+        fun permissionContext(sender: MessageSender): PermissionContext {
+            val platform = AccessController.platform(bot.adapterKey())
+            return PermissionContext(
+                user = PermissionSubject(platform, PermissionSubjectType.USER, sender.user.userID),
+                group = sender.target.takeIf { sender.type == ChatType.GROUP }
+                    ?.let { PermissionSubject(platform, PermissionSubjectType.GROUP, it) },
+            )
+        }
+
+        fun hasPermission(
+            sender: MessageSender,
+            node: String,
+            default: PermissionDefault = PermissionDefault.DENY,
+        ): Boolean = sender.type == ChatType.SELF ||
+            permissionService.hasPermission(permissionContext(sender), node, default)
+
+        fun requirePermission(
+            sender: MessageSender,
+            messageID: Long,
+            node: String,
+            default: PermissionDefault = PermissionDefault.DENY,
+        ): Boolean {
+            if (hasPermission(sender, node, default)) return true
+            bot.reply(
+                sender,
+                messageID,
+                translatorFor(preference(bot, sender.user.userID).language).translate("admin.denied"),
+            )
+            return false
+        }
+
         bot.onCommandError(CommandErrorHandler { sender, operation, messageID, error ->
             val fileName = recordCommandError(bot, sender, messageID, operation, error)
             commandErrorMessage(preference(bot, sender.user.userID).language, fileName)
@@ -1052,7 +1077,6 @@ fun main() = runBlocking {
                 val userTranslator = translatorFor(preference(bot, sender.user.userID).language)
                 val key = when (decision) {
                     AccessDecision.BLOCKED -> "access.blocked"
-                    AccessDecision.NOT_ALLOWED -> "access.not_allowed"
                     AccessDecision.RATE_LIMITED -> "access.rate_limited"
                     AccessDecision.ALLOWED -> error("Unreachable")
                 }
@@ -1095,14 +1119,16 @@ fun main() = runBlocking {
             return@CommandExecutor
         }
 
-        val gallery = try {
-            eh.parseUrl(url)
+        val task = try {
+            checkNotNull(providers.resolve("eh")) { "E-Hentai plugin is disabled or unavailable." }.parse(url)
         } catch (_: IllegalArgumentException) {
             bot.reply(sender, messageID, userTranslator.translate("command.eh.invalid_url"))
             return@CommandExecutor
+        } catch (_: IllegalStateException) {
+            bot.reply(sender, messageID, userTranslator.translate("command.execution_failed"))
+            return@CommandExecutor
         }
 
-        val task = ComicTask.EHentai(gallery)
         val extra = queueExtra(bot, sender, messageID, blurImages)
         val result = submitTask(task, extra)
         val response = when (result) {
@@ -1139,13 +1165,15 @@ fun main() = runBlocking {
             )
             return@CommandExecutor
         }
-        val albumId = try {
-            jm.parseUrl(target)
+        val task = try {
+            checkNotNull(providers.resolve("jm")) { "JM plugin is disabled or unavailable." }.parse(target)
         } catch (_: IllegalArgumentException) {
             bot.reply(sender, messageID, userTranslator.translate("command.jm.invalid_target"))
             return@CommandExecutor
+        } catch (_: IllegalStateException) {
+            bot.reply(sender, messageID, userTranslator.translate("command.execution_failed"))
+            return@CommandExecutor
         }
-        val task = ComicTask.JMComic(albumId)
         val extra = queueExtra(bot, sender, messageID, blurImages)
         val result = submitTask(task, extra)
         val response = when (result) {
@@ -1189,7 +1217,6 @@ fun main() = runBlocking {
 
     fun searchExecutor(
         source: String,
-        search: (String, Int, ComicSearchOptions) -> ComicSearchPage<*>,
     ): CommandExecutor = CommandExecutor { sender, _, args, messageID ->
         val userTranslator = translatorFor(preference(bot, sender.user.userID).language)
         val arguments = try {
@@ -1207,7 +1234,8 @@ fun main() = runBlocking {
         }
 
         val searchPage = try {
-            search(arguments.keyword, arguments.page, arguments.options)
+            checkNotNull(providers.resolve(source)) { "Comic provider $source is unavailable." }
+                .search(arguments.keyword, arguments.page, arguments.options)
         } catch (exception: Exception) {
             logger.warn(
                 "Search failed for {} page {}: {}",
@@ -1284,12 +1312,12 @@ fun main() = runBlocking {
         subcommand(
             "eh",
             usage = translator.translate("command.search.eh.usage", config.getConfig().bot.commandOperator),
-            executor = searchExecutor("eh", eh::search),
+            executor = searchExecutor("eh"),
         )
         subcommand(
             "jm",
             usage = translator.translate("command.search.jm.usage", config.getConfig().bot.commandOperator),
-            executor = searchExecutor("jm", jm::search),
+            executor = searchExecutor("jm"),
         )
     }
 
@@ -1312,11 +1340,8 @@ fun main() = runBlocking {
                 ?.takeIf { it > 0 }
                 ?: arguments.page
             val searchPage = runCatching {
-                if (source == "eh") {
-                    eh.search(arguments.keyword, page, arguments.options)
-                } else {
-                    jm.search(arguments.keyword, page, arguments.options)
-                }
+                checkNotNull(providers.resolve(source)) { "Comic provider $source is unavailable." }
+                    .search(arguments.keyword, page, arguments.options)
             }.getOrElse { exception ->
                 logger.warn("Telegram inline search failed for {} page {}: {}", source, page, query, exception)
                 bot.answerInlineQuery(event.queryID, emptyList())
@@ -1379,7 +1404,7 @@ fun main() = runBlocking {
             messageID,
             translator.translate(
                 "command.info.content",
-                if (accessController.isAdmin(bot.adapterKey(), sender.user.userID)) {
+                if (hasPermission(sender, "usefulbot.admin")) {
                     UsersTable.Role.ADMIN.name
                 } else {
                     UsersTable.Role.USER.name
@@ -1548,34 +1573,50 @@ fun main() = runBlocking {
         }
     }
 
-    fun requireAdmin(sender: MessageSender, messageID: Long): Boolean {
-        if (accessController.isAdmin(bot.adapterKey(), sender.user.userID)) return true
-        bot.reply(sender, messageID, translatorFor(preference(bot, sender.user.userID).language).translate("admin.denied"))
-        return false
-    }
-
-    bot.registerCommand("health", usage = translator.translate("command.health.usage")) {
+    bot.registerCommand(
+        "health",
+        usage = translator.translate("command.health.usage"),
+        permissionDefault = PermissionDefault.ADMIN or PermissionDefault.ALLOW_CONSOLE,
+    ) {
         sender, _, _, messageID ->
-        if (!requireAdmin(sender, messageID)) return@registerCommand
+        if (!requirePermission(sender, messageID, "usefulbot.health", PermissionDefault.ADMIN)) {
+            return@registerCommand
+        }
         val freeMiB = dataFolder.usableSpace / 1024 / 1024
         val ehEndpoint = if (config.getConfig().eHentai.isExHentai) "https://exhentai.org/" else "https://e-hentai.org/"
         val jmEndpoint = config.getConfig().jmComic.apiDomains.firstOrNull()
             ?.let { "https://$it" }
             ?: config.getConfig().jmComic.redirectUrl
+        bot.reply(sender, messageID, "health\nchecking endpoints...")
+        val endpointHealth = probeHealthEndpoints(
+            linkedMapOf(
+                "eh" to ehEndpoint,
+                "jm" to jmEndpoint,
+            ),
+            ::probe,
+        )
         bot.reply(
             sender,
             messageID,
-            "health\nadapters=${connectedAdapters.joinToString()}\neh=${probe(ehEndpoint)}\njm=${probe(jmEndpoint)}\nproxy=${config.getConfig().proxy.type}\ndatabase=ok (${economic.userCount()} users)\nqueue=${queue.snapshots().size}\noutbox=${stateStore.outboxSize()}\ndisk_free=${freeMiB} MiB\nproviders=${providers.entries().joinToString { it.first }}",
+            "health\nadapters=${connectedAdapters.joinToString()}\neh=${endpointHealth.getValue("eh")}\njm=${endpointHealth.getValue("jm")}\nproxy=${config.getConfig().proxy.type}\ndatabase=ok (${economic.userCount()} users)\nqueue=${queue.snapshots().size}\noutbox=${stateStore.outboxSize()}\ndisk_free=${freeMiB} MiB\nproviders=${providers.entries().joinToString { it.first }}\nplugins=${pluginManager.snapshots().joinToString { "${it.metadata.id}:${it.status.name.lowercase()}" }}",
         )
     }
 
     bot.registerCommand("admin", usage = translator.translate("command.admin.usage")) {
-        subcommand("status", usage = translator.translate("command.admin.status.usage")) { sender, _, _, messageID ->
-            if (!requireAdmin(sender, messageID)) return@subcommand
+        subcommand(
+            "status",
+            usage = translator.translate("command.admin.status.usage"),
+            permissionDefault = PermissionDefault.ADMIN or PermissionDefault.ALLOW_CONSOLE,
+        ) { sender, _, _, messageID ->
+            if (!requirePermission(sender, messageID, "usefulbot.admin.status", PermissionDefault.ADMIN)) return@subcommand
             bot.reply(sender, messageID, "queue=${queue.snapshots().size}, outbox=${stateStore.outboxSize()}, users=${economic.userCount()}")
         }
-        subcommand("gp", usage = translator.translate("command.admin.gp.usage")) { sender, _, args, messageID ->
-            if (!requireAdmin(sender, messageID)) return@subcommand
+        subcommand(
+            "gp",
+            usage = translator.translate("command.admin.gp.usage"),
+            permissionDefault = PermissionDefault.ADMIN or PermissionDefault.ALLOW_CONSOLE,
+        ) { sender, _, args, messageID ->
+            if (!requirePermission(sender, messageID, "usefulbot.admin.gp", PermissionDefault.ADMIN)) return@subcommand
             val parts = args.toString().trim().split(Regex("\\s+"))
             val userId = parts.getOrNull(0)?.let(AccessController::normalizeScopedIdentity)
             val amount = parts.getOrNull(1)?.toLongOrNull()
@@ -1587,44 +1628,126 @@ fun main() = runBlocking {
             }
             bot.reply(sender, messageID, if (success) "OK: ${economic.getBalance(userId!!)} GP" else "Invalid arguments or insufficient balance.")
         }
-        subcommand("ban", usage = translator.translate("command.admin.ban.usage")) { sender, _, args, messageID ->
-            if (!requireAdmin(sender, messageID)) return@subcommand
-            val identity = AccessController.normalizeScopedIdentity(args.toString())
-            if (identity == null) bot.reply(sender, messageID, "Invalid identity; use tg:id or qq:id.") else {
-                stateStore.setBanned(identity, true); bot.reply(sender, messageID, "Banned $identity.")
-            }
-        }
-        subcommand("unban", usage = translator.translate("command.admin.unban.usage")) { sender, _, args, messageID ->
-            if (!requireAdmin(sender, messageID)) return@subcommand
-            val identity = AccessController.normalizeScopedIdentity(args.toString())
-            if (identity == null) bot.reply(sender, messageID, "Invalid identity; use tg:id or qq:id.") else {
-                stateStore.setBanned(identity, false); bot.reply(sender, messageID, "Unbanned $identity.")
-            }
-        }
-        subcommand("cache", usage = translator.translate("command.admin.cache.usage")) { sender, _, _, messageID ->
-            if (!requireAdmin(sender, messageID)) return@subcommand
+        subcommand(
+            "cache",
+            usage = translator.translate("command.admin.cache.usage"),
+            permissionDefault = PermissionDefault.ADMIN or PermissionDefault.ALLOW_CONSOLE,
+        ) { sender, _, _, messageID ->
+            if (!requirePermission(sender, messageID, "usefulbot.admin.cache", PermissionDefault.ADMIN)) return@subcommand
             val result = runCacheCleanup()
             bot.reply(sender, messageID, "Deleted ${result.deletedFiles} files (${result.deletedBytes / 1024 / 1024} MiB); remaining ${result.remainingBytes / 1024 / 1024} MiB.")
         }
-        subcommand("retry", usage = translator.translate("command.admin.retry.usage")) { sender, _, _, messageID ->
-            if (!requireAdmin(sender, messageID)) return@subcommand
+        subcommand(
+            "retry",
+            usage = translator.translate("command.admin.retry.usage"),
+            permissionDefault = PermissionDefault.ADMIN or PermissionDefault.ALLOW_CONSOLE,
+        ) { sender, _, _, messageID ->
+            if (!requirePermission(sender, messageID, "usefulbot.admin.retry", PermissionDefault.ADMIN)) return@subcommand
             val count = stateStore.retryAllDeliveries()
             bot.reply(sender, messageID, "Reactivated $count pending deliveries.")
         }
-        subcommand("cancel", usage = translator.translate("command.admin.cancel.usage")) { sender, _, args, messageID ->
-            if (!requireAdmin(sender, messageID)) return@subcommand
+        subcommand(
+            "cancel",
+            usage = translator.translate("command.admin.cancel.usage"),
+            permissionDefault = PermissionDefault.ADMIN or PermissionDefault.ALLOW_CONSOLE,
+        ) { sender, _, args, messageID ->
+            if (!requirePermission(sender, messageID, "usefulbot.admin.cancel", PermissionDefault.ADMIN)) return@subcommand
             val id = args.toString().trim()
             val result = queue.cancelTask(id)
             if (result.status != ProcessingQueue.CancelStatus.NOT_FOUND) stateStore.completeTask(id)
             bot.reply(sender, messageID, result.status.name)
         }
     }
-    bot.setCommandVisibility("health", "admin") { sender ->
-        accessController.isAdmin(bot.adapterKey(), sender.user.userID)
+    bot.setCommandVisibility("health") { sender ->
+        hasPermission(sender, "usefulbot.health", PermissionDefault.ADMIN)
+    }
+    bot.setCommandVisibility("admin") { sender ->
+        listOf("status", "gp", "cache", "retry", "cancel").any { action ->
+            hasPermission(sender, "usefulbot.admin.$action")
+        } || hasPermission(sender, "usefulbot.admin", PermissionDefault.ADMIN)
     }
     }
 
     bots.forEach { (bot, blurImages) -> configureBot(bot, blurImages) }
+    val pluginConfig = config.getConfig().plugins
+    val builtInPlugins = listOf(
+        BuiltInPlugin(
+            descriptor = PluginDescriptor(
+                id = "permissions",
+                name = "Built-in Permissions",
+                version = "1.0.0",
+                main = PermissionPlugin::class.java.name,
+                description = "Persistent permission nodes and dynamic bans.",
+            ),
+            instance = PermissionPlugin(
+                permissions = permissionService,
+                state = stateStore,
+                adapterKey = { it.adapterKey() },
+                translatorFor = { targetBot, userId ->
+                    translatorFor(preference(targetBot, userId).language)
+                },
+                defaultTranslator = translator,
+            ),
+            essential = true,
+        ),
+        BuiltInPlugin(
+            descriptor = PluginDescriptor(
+                id = "eh",
+                name = "E-Hentai Provider",
+                version = "1.0.0",
+                main = BuiltInComicProviderPlugin::class.java.name,
+                description = "Built-in E-Hentai and ExHentai comic provider.",
+            ),
+            instance = BuiltInComicProviderPlugin(
+                id = "eh",
+                aliases = arrayOf("ex"),
+                registry = providers,
+                provider = ProviderDefinition(
+                    parse = { ComicTask.EHentai(eh.parseUrl(it)) },
+                    search = eh::search,
+                    generate = { task -> generateEHentai((task as ComicTask.EHentai).gallery) },
+                    deliver = { result, extra -> deliverEHentai(result as ComicTaskResult.EHentai, extra) },
+                ),
+            ),
+        ),
+        BuiltInPlugin(
+            descriptor = PluginDescriptor(
+                id = "jm",
+                name = "JMComic Provider",
+                version = "1.0.0",
+                main = BuiltInComicProviderPlugin::class.java.name,
+                description = "Built-in JMComic provider.",
+            ),
+            instance = BuiltInComicProviderPlugin(
+                id = "jm",
+                aliases = emptyArray(),
+                registry = providers,
+                provider = ProviderDefinition(
+                    parse = { ComicTask.JMComic(jm.parseUrl(it)) },
+                    search = jm::search,
+                    generate = { task -> generateJMComic((task as ComicTask.JMComic).albumId) },
+                    deliver = { result, extra -> deliverJMComic(result as ComicTaskResult.JMComic, extra) },
+                ),
+            ),
+        ),
+    )
+    pluginManager = PluginManager(
+        pluginDirectory = File(rootFolder, pluginConfig.directory),
+        rootDirectory = rootFolder.canonicalFile,
+        bots = bots.map { it.first },
+        disabledPluginIds = pluginConfig.disabled.toSet(),
+        builtInPlugins = builtInPlugins,
+        externalPluginsEnabled = pluginConfig.enabled,
+        mandatoryPluginIds = setOf("permissions"),
+        platformResolver = { AccessController.platform(it.adapterKey()) },
+    )
+    pluginManager.loadAndEnableAll()
+    val console = JLineConsole(bots.first().first)
+    Runtime.getRuntime().addShutdownHook(Thread({
+        runCatching { console.close() }
+        pluginManager.close()
+        bots.asReversed().forEach { (bot, _) -> runCatching { bot.close() } }
+    }, "plugin-and-bot-shutdown"))
     val connectedBotCount = bots.count { (bot, _) ->
         runCatching { bot.connect() }
             .onFailure { exception ->
@@ -1638,6 +1761,10 @@ fun main() = runBlocking {
             .also { connected -> if (connected) connectedAdapters.add(bot.adapterKey()) }
     }
     check(connectedBotCount > 0) { "None of the enabled bot adapters could be connected." }
+    launch(Dispatchers.IO) {
+        runCatching { console.run() }
+            .onFailure { logger.error("Console stopped unexpectedly.", it) }
+    }
 
     val botsByAdapter = bots.associate { (bot, _) -> bot.adapterKey() to bot }
     stateStore.pendingTasks().forEach { persistent ->
@@ -1719,17 +1846,6 @@ fun main() = runBlocking {
             val freeMiB = dataFolder.usableSpace / 1024 / 1024
             if (freeMiB < config.getConfig().cache.minimumFreeSpaceMiB) {
                 logger.warn("Low disk space: {} MiB available under data directory.", freeMiB)
-                bots.forEach { (bot, _) ->
-                    accessController.adminTargets(bot.adapterKey()).forEach { adminId ->
-                        runCatching {
-                            bot.sendMessage(
-                                ChatType.PRIVATE,
-                                adminId,
-                                MessageChain.text("UsefulBot warning: only $freeMiB MiB of disk space remains."),
-                            )
-                        }.onFailure { logger.debug("Could not send low-disk alert through {}.", bot.adapterKey(), it) }
-                    }
-                }
             }
             delay(TimeUnit.MINUTES.toMillis(config.getConfig().cache.cleanupIntervalMinutes.coerceAtLeast(1)))
         }
@@ -1864,3 +1980,13 @@ internal fun formatSearchResult(
 
 private const val SEARCH_RESULT_LIMIT = 10
 private const val SEARCH_TAG_LIMIT = 16
+private const val HEALTH_PROBE_TIMEOUT_SECONDS = 4L
+
+internal suspend fun probeHealthEndpoints(
+    endpoints: Map<String, String>,
+    probe: (String) -> String,
+): Map<String, String> = coroutineScope {
+    endpoints.mapValues { (_, endpoint) ->
+        async(Dispatchers.IO) { probe(endpoint) }
+    }.mapValues { (_, result) -> result.await() }
+}

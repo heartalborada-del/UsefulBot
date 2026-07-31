@@ -13,5 +13,8 @@ class ComicProviderRegistryTest {
         assertEquals("provider", registry.resolve("EH"))
         assertEquals("provider", registry.resolve("ex"))
         assertFailsWith<IllegalArgumentException> { registry.register("jm", "other", "ex") }
+        assertEquals("provider", registry.unregister("eh"))
+        assertEquals(null, registry.resolve("eh"))
+        assertEquals(null, registry.resolve("ex"))
     }
 }
