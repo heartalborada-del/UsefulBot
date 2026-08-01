@@ -243,6 +243,52 @@ abstract class AbstractBot(
     abstract fun recallMessage(messageID: Long): Boolean
 
     /**
+     * Recalls a message using an explicit chat target.
+     *
+     * This overload is preferable when the adapter needs both a chat ID and a
+     * message ID, or when the message was created before the current process.
+     * The default implementation delegates to [recallMessage].
+     *
+     * @param type target chat type
+     * @param target user or group ID selected by [type]
+     * @param messageID platform message ID
+     */
+    @SupportedBotTypes(BotType.NAPCAT, BotType.TELEGRAM)
+    open fun recallMessage(type: ChatType, target: Long, messageID: Long): Boolean =
+        recallMessage(messageID)
+
+    /**
+     * Replaces the content of an existing text message.
+     *
+     * @return `true` when the platform accepted the edit; unsupported adapters return `false`
+     */
+    @SupportedBotTypes(BotType.TELEGRAM)
+    open fun editMessage(
+        type: ChatType,
+        target: Long,
+        messageID: Long,
+        message: MessageChain,
+    ): Boolean = false
+
+    /**
+     * Pins a message in its chat.
+     *
+     * @param notify whether members should receive a pin notification when supported
+     * @return `true` when the platform accepted the operation; unsupported targets return `false`
+     */
+    @SupportedBotTypes(BotType.NAPCAT, BotType.TELEGRAM)
+    open fun pinMessage(
+        type: ChatType,
+        target: Long,
+        messageID: Long,
+        notify: Boolean = false,
+    ): Boolean = false
+
+    /** Unpins one specific message from its chat. */
+    @SupportedBotTypes(BotType.NAPCAT, BotType.TELEGRAM)
+    open fun unpinMessage(type: ChatType, target: Long, messageID: Long): Boolean = false
+
+    /**
      * Sends a file referenced by a URL, data URI, or adapter-supported local path.
      *
      * @param type target chat type

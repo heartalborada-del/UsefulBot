@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "me.heartalborada"
-version = "1.3.0"
+version = "1.4.0"
 
 val exposedVersion = project.property("exposedVersion").toString()
 subprojects {

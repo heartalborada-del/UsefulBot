@@ -139,7 +139,7 @@ java -jar ./implements/build/libs/UsefulBot-1.3.0.jar --resolve-dependencies-onl
 - 用户、群和多平台访问由内置 `permissions` 插件管理；`Tasks.StateFile` 保存权限、动态封禁、待恢复任务、失败补发、每日额度和用户偏好。
 - 首次启动可在 JLine 控制台执行 `permission grant tg:user:<id> usefulbot.admin`（QQ 使用 `qq:user:<id>`）授予管理员权限。
 - 控制台只补全并执行显式包含 `ALLOW_CONSOLE` 的命令；当前包括 `health`、`admin` 和 `permission` 的管理子命令。
-- `permissions` 是基础内置插件，不能通过 `Plugins.Disabled` 或运行时卸载关闭；EH、JM 等功能插件仍可单独禁用。
+- `permissions` 是基础内置插件，不能通过 `Plugins.Disabled` 或运行时卸载关闭；EH/JM 统一属于 `comic` 插件，可整体禁用。
 - `Cache` 控制 PDF 总容量、保留天数、清理周期及低磁盘告警阈值。
 - `Batch.Enabled` 默认为 `false`；只有设为 `true` 时才注册 `/batch` 并同步到 Telegram 菜单。
 
@@ -191,6 +191,7 @@ Telegram 发送的普通 PDF 和 PDF 分卷均不设置打开密码；NapCat 发
 | --- | --- |
 | `/help` | 显示帮助和可用命令 |
 | `/about` | 显示机器人信息 |
+| `/plugins` | 以 `[name:version,]` 格式显示插件列表 |
 | `/get eh <链接>` | 下载 E-Hentai / ExHentai 画廊 |
 | `/get jm <车号或链接>` | 下载 JMComic 专辑 |
 | `/query eh <链接>` | 查询 E-Hentai / ExHentai 画廊信息和封面 |
@@ -262,21 +263,19 @@ Telegram 适配器连接成功后会调用 `setMyCommands`，根据程序实际�
 ## 数据目录
 
 ```text
+plugins/
+└─ comic/
+   ├─ eh/          # E-Hentai 归档、图片、PDF 与临时文件
+   └─ jm/          # JMComic 图片、PDF 与临时文件
+
 data/
-├─ eh/
-│  ├─ archive/    # E-Hentai 下载归档
-│  ├─ img/        # 封面和页面
-│  ├─ pdf/        # 最终 PDF
-│  └─ temp/       # 下载与 PDF 临时文件
-├─ jm/
-│  ├─ img/        # 封面和还原后的页面
-│  ├─ pdf/        # 最终 PDF
-│  └─ temp/       # PDF 临时文件
-├─ telegram/
-│  └─ temp/       # Telegram PDF 分卷临时目录
-├─ bot-state.json # 待恢复任务、补发箱、访问状态和用户偏好
-└─ data.*         # H2 数据库
+├─ telegram/temp/  # Telegram PDF 分卷临时目录
+├─ bot-state.json  # 待恢复任务、补发箱、访问状态和用户偏好
+└─ data.*          # 独立的经济与 Telegram 文件缓存 H2 数据库
 ```
+
+启动时会把旧的 `data/eh`、`data/jm`、`plugins/eh/data` 和 `plugins/jm/data`
+合并迁移到 `plugins/comic`。已存在的目标文件不会被覆盖。
 
 GP 数据使用 H2 持久化，用户主键直接保存为 `tg:<id>` 或 `qq:<id>`。数据库文件为 `data/data.mv.db`；本版本不迁移旧的 `data/gp.mv.db`，升级时应删除旧库并让程序重新创建。请在程序停止后备份数据库，避免得到不一致的文件快照。
 

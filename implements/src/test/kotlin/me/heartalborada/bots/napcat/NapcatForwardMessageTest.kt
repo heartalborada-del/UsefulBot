@@ -13,6 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 
 class NapcatForwardMessageTest {
     private val messageGson = GsonBuilder()
@@ -103,5 +104,14 @@ class NapcatForwardMessageTest {
         assertFailsWith<IllegalArgumentException> {
             buildFriendRequestResponseParams(" ", approve = true, remark = null)
         }
+    }
+
+    @Test
+    fun `builds group pin operations and rejects private chats`() {
+        assertEquals(
+            mapOf("group_id" to 456L, "message_id" to 123L),
+            buildNapcatPinnedMessageParams(ChatType.GROUP, 456L, 123L),
+        )
+        assertNull(buildNapcatPinnedMessageParams(ChatType.PRIVATE, 456L, 123L))
     }
 }

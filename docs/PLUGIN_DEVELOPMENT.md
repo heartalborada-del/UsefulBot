@@ -30,7 +30,7 @@ Add `usefulbot.plugin.json5` to the JAR root:
   name: 'Ping',
   version: '1.0.0',
   main: 'example.PingPlugin',
-  apiVersion: 2,
+  apiVersion: 3,
   description: 'Adds a ping command',
   dependencies: [],
   libraries: [
@@ -47,9 +47,10 @@ accepted. `id`, `name`, `version` and `main` are required.
 
 Use `PluginContext.listen` and `PluginContext.registerCommand` whenever possible.
 Those registrations and `PluginContext.scope` are released automatically on
-shutdown. Settings belong in `PluginContext.configDirectory`; generated state and
-caches belong in `PluginContext.dataDirectory`. Their default locations are
-`plugins/<id>/config` and `plugins/<id>/data`.
+shutdown. Each plugin receives one automatically created
+`PluginContext.pluginDirectory` at `plugins/<id>`. The plugin owns the layout
+inside that directory, including any configuration, state, cache, or generated
+files it needs.
 
 Lifecycle order is `onLoad` -> `onEnable` -> `onDisable` -> context cleanup ->
 `onUnload`. `onUnload` runs for explicit unloads and normal application shutdown.
@@ -76,8 +77,9 @@ Public event classes and bot methods use `@SupportedBotTypes` to document their
 built-in adapter support. The annotation is also available through reflection.
 
 - NapCat + Telegram: private/group messages, online/offline events, messaging,
-  forwarding, recall, and file methods.
-- Telegram: inline queries, callback queries, and their answer methods.
+  forwarding, targeted recall, pin/unpin, and file methods.
+- Telegram: text-message editing, inline queries, callback queries, and their
+  answer methods.
 - NapCat: heartbeat and group notices, friend/group requests, and request response
   methods.
 
@@ -95,11 +97,26 @@ context.listen(CallbackQueryEvent::class.java) { bot, event ->
 An unsupported platform method returns `false`. Pass a NapCat request event's
 `requestFlag` unchanged to the matching response method.
 
+For message operations, prefer the overload containing the chat target. It also
+works for messages that predate the current process:
+
+```kotlin
+bot.recallMessage(ChatType.GROUP, groupId, messageId)
+bot.editMessage(ChatType.PRIVATE, userId, messageId, MessageChain.text("updated"))
+bot.pinMessage(ChatType.GROUP, groupId, messageId)
+bot.unpinMessage(ChatType.GROUP, groupId, messageId)
+```
+
+The legacy `recallMessage(messageId)` remains available, but Telegram can only
+use it while its in-memory message-to-chat mapping is present. NapCat does not
+support editing, and its pin operations only support group messages.
+
 ## Built-in plugins and services
 
-The host ships `permissions`, `eh` and `jm` through the same lifecycle as external
-plugins. They appear in plugin health output. `eh` and `jm` can be listed in
-`Plugins.Disabled`; `permissions` is an essential built-in, so disable requests
+The host ships `permissions` and `comic` through the same lifecycle as external
+plugins. `comic` owns the `eh`, `ex`, and `jm` providers and stores their files
+under `plugins/comic/eh` and `plugins/comic/jm`. These plugins appear in plugin
+health output. `comic` can be listed in `Plugins.Disabled`; `permissions` is an essential built-in, so disable requests
 are ignored and runtime unload is rejected. Normal shutdown still invokes its
 `onDisable` and `onUnload` callbacks.
 `Plugins.Enabled` controls external JAR discovery only, so disabling external
@@ -216,5 +233,5 @@ wins when both dimensions tie. For example, `+a.b.*` with `-a.b.c` denies only
 ```
 
 `Enabled` controls external JAR loading. Non-essential built-ins are disabled
-individually through `Disabled`, for example `["eh"]`; essential built-ins are
+individually through `Disabled`, for example `["comic"]`; essential built-ins are
 never disabled by configuration.

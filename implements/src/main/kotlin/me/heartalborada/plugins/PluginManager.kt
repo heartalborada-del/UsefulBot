@@ -42,7 +42,6 @@ data class BuiltInPlugin(
  */
 class PluginManager(
     private val pluginDirectory: File,
-    private val rootDirectory: File,
     private val bots: List<AbstractBot>,
     disabledPluginIds: Set<String> = emptySet(),
     private val builtInPlugins: List<BuiltInPlugin> = emptyList(),
@@ -307,9 +306,7 @@ class PluginManager(
             val pluginRoot = File(pluginDirectory, id)
             context = PluginContext(
                 pluginId = id,
-                rootDirectory = rootDirectory,
-                configDirectory = File(pluginRoot, "config"),
-                dataDirectory = File(pluginRoot, "data"),
+                pluginDirectory = pluginRoot,
                 bots = bots,
                 logger = LoggerFactory.getLogger("plugin.$id"),
                 services = serviceRegistry,

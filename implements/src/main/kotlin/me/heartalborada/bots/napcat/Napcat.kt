@@ -240,44 +240,33 @@ class Napcat(
 
     override fun recallMessage(messageID: Long): Boolean {
         logger.debug("[Recall] {} {}", botID, messageID)
-        return runBlocking {
-            withContext(botContext) {
-                mutex.withLock {
-                    val uuid = UUID.randomUUID().toString()
-                    try {
-                        val data = mutableMapOf<String, Any>().let {
-                            it["message_id"] = messageID
-                            return@let it
-                        }
-                        val responseDiffered = CompletableDeferred<String>()
-                        pendingReqs[uuid] = responseDiffered
-                        val sent = apiWS?.send(gson.toJson(ApiCommon("delete_msg", uuid, data))) == true
-                        if (!sent) throw IllegalStateException("Failed to send message")
-                        val response = withTimeoutOrNull(5000.milliseconds) {
-                            responseDiffered.await().also {
-                                pendingReqs.remove(uuid)
-                            }
-                        }.also { pendingReqs.remove(uuid) }
-                        if (response == null) throw IOException("Timeout")
-                        val root = JsonParser.parseString(response).asJsonObject
-                        when (val code = root.getAsJsonPrimitive("retcode").asInt) {
-                            0 -> return@withContext true
-                            else -> throw IllegalReceiveException(
-                                "Invalid response code: $code, message: ${
-                                    root.getAsJsonPrimitive(
-                                        "message"
-                                    ).asString
-                                }"
-                            )
-                        }
-                    } catch (e: Exception) {
-                        pendingReqs.remove(uuid)
-                        logger.error("An unexpected error occurred.", e)
-                        throw e
-                    }
-                }
-            }
-        }
+        return callOneBotAction("delete_msg", mapOf("message_id" to messageID))
+    }
+
+    override fun recallMessage(type: ChatType, target: Long, messageID: Long): Boolean {
+        require(type == ChatType.PRIVATE || type == ChatType.GROUP) { "Invalid chat type: $type" }
+        return recallMessage(messageID)
+    }
+
+    override fun pinMessage(
+        type: ChatType,
+        target: Long,
+        messageID: Long,
+        notify: Boolean,
+    ): Boolean {
+        val params = buildNapcatPinnedMessageParams(type, target, messageID) ?: return false
+        return callOneBotAction(
+            "set_group_top_msg",
+            params,
+        )
+    }
+
+    override fun unpinMessage(type: ChatType, target: Long, messageID: Long): Boolean {
+        val params = buildNapcatPinnedMessageParams(type, target, messageID) ?: return false
+        return callOneBotAction(
+            "delete_group_top_msg",
+            params,
+        )
     }
 
     override fun sendFile(type: ChatType, target: Long, name: String, file: File): Boolean {
@@ -814,6 +803,16 @@ internal fun buildFriendRequestResponseParams(
         put("approve", approve)
         remark?.let { put("remark", it) }
     }
+}
+
+internal fun buildNapcatPinnedMessageParams(
+    type: ChatType,
+    target: Long,
+    messageID: Long,
+): Map<String, Any>? = if (type == ChatType.GROUP) {
+    mapOf("group_id" to target, "message_id" to messageID)
+} else {
+    null
 }
 
 internal fun buildGroupRequestResponseParams(

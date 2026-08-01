@@ -259,13 +259,68 @@ class TelegramBot(
 
     override fun recallMessage(messageID: Long): Boolean {
         val chatID = messageChats[messageID] ?: return false
+        return recallMessage(ChatType.PRIVATE, chatID, messageID)
+    }
+
+    override fun recallMessage(type: ChatType, target: Long, messageID: Long): Boolean {
+        requireChatTarget(type)
         val params = JsonObject().apply {
-            addProperty("chat_id", chatID)
+            addProperty("chat_id", target)
             addProperty("message_id", messageID)
         }
         val deleted = call("deleteMessage", params).asBoolean
         if (deleted) messageChats.remove(messageID)
         return deleted
+    }
+
+    override fun editMessage(
+        type: ChatType,
+        target: Long,
+        messageID: Long,
+        message: MessageChain,
+    ): Boolean {
+        requireChatTarget(type)
+        require(message.none { it is Image || it is FileMessage }) {
+            "Telegram editMessage only supports text messages."
+        }
+        val text = renderTelegramText(message)
+        require(text.isNotBlank()) { "Telegram edited message text must not be blank." }
+        require(text.length <= MAX_MESSAGE_LENGTH) {
+            "Telegram edited message text exceeds $MAX_MESSAGE_LENGTH characters."
+        }
+        val params = JsonObject().apply {
+            addProperty("chat_id", target)
+            addProperty("message_id", messageID)
+            addProperty("text", text)
+            message.filterIsInstance<ActionKeyboard>().firstOrNull()?.let { keyboard ->
+                add("reply_markup", keyboard.toTelegramMarkup())
+            }
+        }
+        call("editMessageText", params)
+        messageChats[messageID] = target
+        return true
+    }
+
+    override fun pinMessage(
+        type: ChatType,
+        target: Long,
+        messageID: Long,
+        notify: Boolean,
+    ): Boolean {
+        requireChatTarget(type)
+        return call("pinChatMessage", JsonObject().apply {
+            addProperty("chat_id", target)
+            addProperty("message_id", messageID)
+            addProperty("disable_notification", !notify)
+        }).asBoolean
+    }
+
+    override fun unpinMessage(type: ChatType, target: Long, messageID: Long): Boolean {
+        requireChatTarget(type)
+        return call("unpinChatMessage", JsonObject().apply {
+            addProperty("chat_id", target)
+            addProperty("message_id", messageID)
+        }).asBoolean
     }
 
     override fun sendFile(type: ChatType, target: Long, name: String, url: String): Boolean {
@@ -479,6 +534,12 @@ class TelegramBot(
             if (firstMessageID == null) firstMessageID = messageID
         }
         return checkNotNull(firstMessageID)
+    }
+
+    private fun requireChatTarget(type: ChatType) {
+        require(type == ChatType.PRIVATE || type == ChatType.GROUP) {
+            "Unsupported Telegram chat type: $type"
+        }
     }
 
     private fun sendPhoto(chatID: Long, image: Image, caption: String, replyTo: Long?): Long {

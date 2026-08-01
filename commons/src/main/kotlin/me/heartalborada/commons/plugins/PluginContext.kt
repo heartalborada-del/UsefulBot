@@ -83,9 +83,7 @@ class PluginSubcommandBuilder internal constructor(
  */
 class PluginContext(
     val pluginId: String,
-    val rootDirectory: File,
-    val configDirectory: File,
-    val dataDirectory: File,
+    val pluginDirectory: File,
     val bots: List<AbstractBot>,
     val logger: Logger,
     private val services: PluginServiceRegistry = PluginServiceRegistry(),
@@ -102,11 +100,8 @@ class PluginContext(
     )
 
     init {
-        require(configDirectory.mkdirs() || configDirectory.isDirectory) {
-            "Could not create plugin config directory: ${configDirectory.absolutePath}"
-        }
-        require(dataDirectory.mkdirs() || dataDirectory.isDirectory) {
-            "Could not create plugin data directory: ${dataDirectory.absolutePath}"
+        require(pluginDirectory.mkdirs() || pluginDirectory.isDirectory) {
+            "Could not create plugin directory: ${pluginDirectory.absolutePath}"
         }
     }
 

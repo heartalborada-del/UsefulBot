@@ -356,6 +356,21 @@ class ConfigDataTest {
         }
     }
 
+    @Test
+    fun `version twelve config maps disabled comic providers to the combined plugin`() {
+        val configFile = Files.createTempFile("useful-bot-v12-config-", ".json").toFile()
+        try {
+            configFile.writeText("""{"version":12,"Plugins":{"Disabled":["eh","other"]}}""")
+
+            val config = Config(configFile).getConfig()
+
+            assertEquals(listOf("other", "comic"), config.plugins.disabled)
+            assertEquals(ConfigData.CURRENT_VERSION, config.version)
+        } finally {
+            configFile.delete()
+        }
+    }
+
     private fun assertAllDefaultFieldsPresent(actual: JsonObject, defaults: JsonObject, path: String = "") {
         defaults.entrySet().forEach { (key, defaultValue) ->
             val fieldPath = if (path.isEmpty()) key else "$path.$key"

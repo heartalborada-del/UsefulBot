@@ -1,6 +1,7 @@
 package me.heartalborada.config
 
 import com.google.gson.GsonBuilder
+import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.JsonPrimitive
@@ -93,6 +94,7 @@ internal object ConfigMigration {
                 9 -> migrateV9ToV10(root)
                 10 -> Unit
                 11 -> migrateV11ToV12(root)
+                12 -> migrateV12ToV13(root)
                 else -> error("No config migration is available for version $version.")
             }
             version++
@@ -206,6 +208,27 @@ internal object ConfigMigration {
             ?: return
         listOf("AdminUserIds", "AllowedUserIds", "AllowedChatIds", "BlockedUserIds")
             .forEach(access::remove)
+    }
+
+    private fun migrateV12ToV13(root: JsonObject) {
+        val plugins = root.get("Plugins")
+            ?.takeIf { it.isJsonObject }
+            ?.asJsonObject
+            ?: return
+        val disabled = plugins.get("Disabled")
+            ?.takeIf { it.isJsonArray }
+            ?.asJsonArray
+            ?: return
+        val ids = disabled.mapNotNull { value ->
+            value.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
+        }
+        if (ids.none { it.equals("eh", ignoreCase = true) || it.equals("jm", ignoreCase = true) }) return
+
+        val migrated = JsonArray()
+        ids.filterNot { it.equals("eh", ignoreCase = true) || it.equals("jm", ignoreCase = true) }
+            .forEach(migrated::add)
+        if (ids.none { it.equals("comic", ignoreCase = true) }) migrated.add("comic")
+        plugins.add("Disabled", migrated)
     }
 
     private fun normalizeSection(parent: JsonObject, canonicalName: String, legacyName: String): JsonObject {

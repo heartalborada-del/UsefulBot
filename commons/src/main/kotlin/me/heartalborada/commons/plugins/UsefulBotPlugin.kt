@@ -1,7 +1,7 @@
 package me.heartalborada.commons.plugins
 
 /** Current binary contract version understood by the host. */
-const val PLUGIN_API_VERSION: Int = 2
+const val PLUGIN_API_VERSION: Int = 3
 
 /** Human-readable and machine-readable identity read from the plugin descriptor. */
 data class PluginMetadata(

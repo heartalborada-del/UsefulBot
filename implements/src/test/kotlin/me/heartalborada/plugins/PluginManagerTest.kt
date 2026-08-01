@@ -25,7 +25,6 @@ class PluginManagerTest {
             createPluginJar(pluginDirectory, id = "foundation", main = MissingDependencyPlugin::class.java)
             PluginManager(
                 pluginDirectory = pluginDirectory,
-                rootDirectory = root,
                 bots = emptyList(),
                 builtInPlugins = listOf(
                     BuiltInPlugin(
@@ -56,7 +55,6 @@ class PluginManagerTest {
             val plugin = FoundationPlugin()
             PluginManager(
                 pluginDirectory = File(root, "plugins"),
-                rootDirectory = root,
                 bots = emptyList(),
                 externalPluginsEnabled = false,
                 builtInPlugins = listOf(
@@ -106,7 +104,6 @@ class PluginManagerTest {
             createPluginJar(pluginDirectory, id = "foundation", main = FoundationPlugin::class.java)
             val manager = PluginManager(
                 pluginDirectory = pluginDirectory,
-                rootDirectory = root,
                 bots = emptyList(),
             )
 
@@ -117,8 +114,9 @@ class PluginManagerTest {
                 events,
             )
             assertTrue(manager.snapshots().all { it.status == PluginStatus.ENABLED })
-            assertTrue(File(pluginDirectory, "foundation/config").isDirectory)
-            assertTrue(File(pluginDirectory, "foundation/data").isDirectory)
+            assertTrue(File(pluginDirectory, "foundation").isDirectory)
+            assertTrue(!File(pluginDirectory, "foundation/config").exists())
+            assertTrue(!File(pluginDirectory, "foundation/data").exists())
             manager.close()
             assertEquals(
                 listOf(
@@ -153,7 +151,6 @@ class PluginManagerTest {
             )
             PluginManager(
                 pluginDirectory = pluginDirectory,
-                rootDirectory = root,
                 bots = emptyList(),
             ).use { manager ->
                 manager.loadAndEnableAll()
@@ -176,7 +173,6 @@ class PluginManagerTest {
             createPluginJar(missingDirectory, id = "dependent", main = DependentPlugin::class.java)
             PluginManager(
                 pluginDirectory = missingDirectory,
-                rootDirectory = missingRoot,
                 bots = emptyList(),
                 mandatoryPluginIds = setOf("permissions"),
             ).use { manager ->
@@ -191,7 +187,6 @@ class PluginManagerTest {
             createPluginJar(disabledDirectory, id = "dependent", main = DependentPlugin::class.java)
             PluginManager(
                 pluginDirectory = disabledDirectory,
-                rootDirectory = disabledRoot,
                 bots = emptyList(),
                 disabledPluginIds = setOf("permissions"),
                 mandatoryPluginIds = setOf("permissions"),
@@ -217,7 +212,6 @@ class PluginManagerTest {
             createPluginJar(pluginDirectory, id = "dependent", main = DependentPlugin::class.java)
             PluginManager(
                 pluginDirectory = pluginDirectory,
-                rootDirectory = root,
                 bots = emptyList(),
                 mandatoryPluginIds = setOf("permissions"),
                 builtInPlugins = listOf(permissionBuiltIn()),
@@ -257,7 +251,6 @@ class PluginManagerTest {
             createPluginJar(pluginDirectory, id = "dependent", main = DependentPlugin::class.java)
             PluginManager(
                 pluginDirectory = pluginDirectory,
-                rootDirectory = root,
                 bots = emptyList(),
                 mandatoryPluginIds = setOf("permissions"),
                 builtInPlugins = listOf(permissionBuiltIn()),

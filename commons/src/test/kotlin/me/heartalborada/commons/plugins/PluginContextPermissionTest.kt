@@ -204,9 +204,7 @@ class PluginContextPermissionTest {
         val bot = FakeBot()
         val context = PluginContext(
             pluginId = "demo",
-            rootDirectory = directory,
-            configDirectory = directory.resolve("config"),
-            dataDirectory = directory.resolve("data"),
+            pluginDirectory = directory,
             bots = listOf(bot),
             logger = LoggerFactory.getLogger("plugin.test.demo"),
             platformResolver = { "tg" },

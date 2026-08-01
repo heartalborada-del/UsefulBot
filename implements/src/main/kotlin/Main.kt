@@ -58,8 +58,11 @@ import me.heartalborada.security.AccessController
 import me.heartalborada.security.AccessDecision
 import me.heartalborada.plugins.PluginManager
 import me.heartalborada.plugins.BuiltInPlugin
+import me.heartalborada.plugins.ComicDataMigration
 import me.heartalborada.plugins.PluginDescriptor
-import me.heartalborada.plugins.builtin.BuiltInComicProviderPlugin
+import me.heartalborada.plugins.PluginSnapshot
+import me.heartalborada.plugins.builtin.BuiltInComicPlugin
+import me.heartalborada.plugins.builtin.BuiltInComicProvider
 import me.heartalborada.plugins.builtin.PermissionPlugin
 import me.heartalborada.permissions.PersistentPermissionService
 import me.heartalborada.state.BotStateStore
@@ -92,13 +95,16 @@ private val pdfCache = CacheBuilder.newBuilder()
     .build<String, Boolean>()
 
 private val rootFolder = File(".")
+private val config = Config(File(rootFolder, "config.json"))
 private val dataFolder = File("data")
-private val ehDataFolder = File(dataFolder, "eh")
+private val pluginsFolder = File(rootFolder, config.getConfig().plugins.directory)
+private val comicPluginFolder = File(pluginsFolder, "comic")
+private val ehDataFolder = File(comicPluginFolder, "eh")
 private val ehTempFolder = File(ehDataFolder, "temp")
 private val ehPdfFolder = File(ehDataFolder, "pdf")
 private val ehImgFolder = File(ehDataFolder, "img")
 private val ehArchiveFolder = File(ehDataFolder, "archive")
-private val jmDataFolder = File(dataFolder, "jm")
+private val jmDataFolder = File(comicPluginFolder, "jm")
 private val jmTempFolder = File(jmDataFolder, "temp")
 private val jmPdfFolder = File(jmDataFolder, "pdf")
 private val jmImgFolder = File(jmDataFolder, "img")
@@ -106,7 +112,6 @@ private val jmImgFolder = File(jmDataFolder, "img")
 private val logger = LoggerFactory.getLogger("Main")
 private val ALLOW_SUFFIX = setOf("jpg", "jpeg", "gif", "png", "webp")
 
-private val config = Config(File(rootFolder, "config.json"))
 private val translator = PropertiesTranslator(config.getConfig().bot.language)
 private val economicDataSource = run {
     dataFolder.mkdirs()
@@ -121,6 +126,11 @@ private val economic = EconomicManager(economicDatabase)
 private lateinit var client: OkHttpClient
 private lateinit var eh: EHentai
 private lateinit var jm: JMComic
+
+internal fun formatPluginList(plugins: List<PluginSnapshot>): String =
+    if (plugins.isEmpty()) "[]" else plugins.joinToString(separator = ",", prefix = "[", postfix = ",]") {
+        "${it.metadata.name}:${it.metadata.version}"
+    }
 
 private sealed interface ComicTask {
     val id: String
@@ -249,6 +259,7 @@ private fun cleanupComicTaskCache(task: ComicTask) {
 }
 
 fun main() = runBlocking {
+    ComicDataMigration.migrate(rootFolder.canonicalFile, pluginsFolder.canonicalFile, logger)
     val telegramFileIdCache = TelegramFileIdCache(economicDatabase)
     val telegramLargeDocumentSenders = ConcurrentHashMap<TelegramBot, TelegramLargeDocumentSender>()
     val commandErrorLogger = CommandErrorLogger(File(rootFolder, "error"))
@@ -1136,6 +1147,11 @@ fun main() = runBlocking {
         bot.reply(sender, messageID, translator.translate("command.about.content"))
     }
 
+    bot.registerCommand("plugins", usage = translator.translate("command.plugins.usage")) {
+        sender, _, _, messageID ->
+        bot.reply(sender, messageID, formatPluginList(pluginManager.snapshots()))
+    }
+
     val getEHExecutor = CommandExecutor { sender, _, args, messageID ->
         val userTranslator = translatorFor(preference(bot, sender.user.userID).language)
         val url = args.toString().trim()
@@ -1777,78 +1793,76 @@ fun main() = runBlocking {
         ),
         BuiltInPlugin(
             descriptor = PluginDescriptor(
-                id = "eh",
-                name = "E-Hentai Provider",
+                id = "comic",
+                name = "Built-in Comic",
                 version = "1.0.0",
-                main = BuiltInComicProviderPlugin::class.java.name,
-                description = "Built-in E-Hentai and ExHentai comic provider.",
+                main = BuiltInComicPlugin::class.java.name,
+                description = "Built-in E-Hentai, ExHentai and JMComic providers.",
             ),
-            instance = BuiltInComicProviderPlugin(
-                id = "eh",
-                aliases = arrayOf("ex"),
+            instance = BuiltInComicPlugin(
                 registry = providers,
-                provider = ProviderDefinition(
-                    parse = { ComicTask.EHentai(eh.parseUrl(it)) },
-                    query = { target ->
-                        val gallery = eh.parseUrl(target)
-                        val info = eh.getTargetInformation(gallery)
-                        val taskName = "${gallery.first}-${gallery.second}"
-                        val imageDirectory = File(ehImgFolder, taskName).apply { mkdirs() }
-                        val extension = Util.getFileExtensionFromUrl(URI.create(info.cover).toURL())
-                            ?.takeIf(String::isNotBlank)
-                            ?: "jpg"
-                        val cover = File(imageDirectory, "cover.$extension")
-                        if (!cover.isFile) {
-                            DownloadManager(1, client, File(ehTempFolder, "query")).use { downloader ->
-                                val failed = downloader.downloadFiles(
-                                    listOf(info.cover to cover.name),
-                                    imageDirectory,
-                                    1,
-                                )
-                                check(failed.isEmpty() && cover.isFile) { "Failed to download the gallery cover." }
-                            }
-                        }
-                        ComicInformationPreview(info, cover)
-                    },
-                    search = eh::search,
-                    generate = { task -> generateEHentai((task as ComicTask.EHentai).gallery) },
-                    deliver = { result, extra -> deliverEHentai(result as ComicTaskResult.EHentai, extra) },
-                ),
-            ),
-        ),
-        BuiltInPlugin(
-            descriptor = PluginDescriptor(
-                id = "jm",
-                name = "JMComic Provider",
-                version = "1.0.0",
-                main = BuiltInComicProviderPlugin::class.java.name,
-                description = "Built-in JMComic provider.",
-            ),
-            instance = BuiltInComicProviderPlugin(
-                id = "jm",
-                aliases = emptyArray(),
-                registry = providers,
-                provider = ProviderDefinition(
-                    parse = { ComicTask.JMComic(jm.parseUrl(it)) },
-                    query = { target ->
-                        val albumId = jm.parseUrl(target)
-                        val info = jm.getTargetInformation(albumId)
-                        val imageDirectory = File(jmImgFolder, "JM$albumId").apply { mkdirs() }
-                        val cover = File(imageDirectory, "cover.jpg").let { targetCover ->
-                            targetCover.takeIf(File::isFile) ?: jm.downloadCover(albumId, targetCover)
-                        }
-                        ComicInformationPreview(info, cover)
-                    },
-                    search = jm::search,
-                    generate = { task -> generateJMComic((task as ComicTask.JMComic).albumId) },
-                    deliver = { result, extra -> deliverJMComic(result as ComicTaskResult.JMComic, extra) },
+                providers = listOf(
+                    BuiltInComicProvider(
+                        id = "eh",
+                        aliases = arrayOf("ex"),
+                        provider = ProviderDefinition(
+                            parse = { ComicTask.EHentai(eh.parseUrl(it)) },
+                            query = { target ->
+                                val gallery = eh.parseUrl(target)
+                                val info = eh.getTargetInformation(gallery)
+                                val taskName = "${gallery.first}-${gallery.second}"
+                                val imageDirectory = File(ehImgFolder, taskName).apply { mkdirs() }
+                                val extension = Util.getFileExtensionFromUrl(URI.create(info.cover).toURL())
+                                    ?.takeIf(String::isNotBlank)
+                                    ?: "jpg"
+                                val cover = File(imageDirectory, "cover.$extension")
+                                if (!cover.isFile) {
+                                    DownloadManager(1, client, File(ehTempFolder, "query")).use { downloader ->
+                                        val failed = downloader.downloadFiles(
+                                            listOf(info.cover to cover.name),
+                                            imageDirectory,
+                                            1,
+                                        )
+                                        check(failed.isEmpty() && cover.isFile) {
+                                            "Failed to download the gallery cover."
+                                        }
+                                    }
+                                }
+                                ComicInformationPreview(info, cover)
+                            },
+                            search = eh::search,
+                            generate = { task -> generateEHentai((task as ComicTask.EHentai).gallery) },
+                            deliver = { result, extra ->
+                                deliverEHentai(result as ComicTaskResult.EHentai, extra)
+                            },
+                        ),
+                    ),
+                    BuiltInComicProvider(
+                        id = "jm",
+                        provider = ProviderDefinition(
+                            parse = { ComicTask.JMComic(jm.parseUrl(it)) },
+                            query = { target ->
+                                val albumId = jm.parseUrl(target)
+                                val info = jm.getTargetInformation(albumId)
+                                val imageDirectory = File(jmImgFolder, "JM$albumId").apply { mkdirs() }
+                                val cover = File(imageDirectory, "cover.jpg").let { targetCover ->
+                                    targetCover.takeIf(File::isFile) ?: jm.downloadCover(albumId, targetCover)
+                                }
+                                ComicInformationPreview(info, cover)
+                            },
+                            search = jm::search,
+                            generate = { task -> generateJMComic((task as ComicTask.JMComic).albumId) },
+                            deliver = { result, extra ->
+                                deliverJMComic(result as ComicTaskResult.JMComic, extra)
+                            },
+                        ),
+                    ),
                 ),
             ),
         ),
     )
     pluginManager = PluginManager(
-        pluginDirectory = File(rootFolder, pluginConfig.directory),
-        rootDirectory = rootFolder.canonicalFile,
+        pluginDirectory = pluginsFolder,
         bots = bots.map { it.first },
         disabledPluginIds = pluginConfig.disabled.toSet(),
         builtInPlugins = builtInPlugins,

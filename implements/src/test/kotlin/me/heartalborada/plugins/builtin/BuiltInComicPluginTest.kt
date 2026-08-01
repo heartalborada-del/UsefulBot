@@ -10,27 +10,27 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
-class BuiltInComicProviderPluginTest {
+class BuiltInComicPluginTest {
     @Test
-    fun `provider registration follows plugin lifecycle`() {
-        val root = Files.createTempDirectory("builtin-provider-").toFile()
+    fun `all provider registrations follow the comic plugin lifecycle`() {
+        val root = Files.createTempDirectory("builtin-comic-").toFile()
         val registry = ComicProviderRegistry<String>()
-        val plugin = BuiltInComicProviderPlugin(
-            id = "eh",
-            aliases = arrayOf("ex"),
+        val plugin = BuiltInComicPlugin(
             registry = registry,
-            provider = "provider",
+            providers = listOf(
+                BuiltInComicProvider("eh", arrayOf("ex"), "eh-provider"),
+                BuiltInComicProvider("jm", provider = "jm-provider"),
+            ),
         )
         val manager = PluginManager(
             pluginDirectory = File(root, "plugins"),
-            rootDirectory = root,
             bots = emptyList(),
             externalPluginsEnabled = false,
             builtInPlugins = listOf(
                 BuiltInPlugin(
                     PluginDescriptor(
-                        id = "eh",
-                        name = "E-Hentai Provider",
+                        id = "comic",
+                        name = "Comic",
                         version = "1.0.0",
                         main = plugin.javaClass.name,
                     ),
@@ -41,12 +41,15 @@ class BuiltInComicProviderPluginTest {
 
         try {
             assertNull(registry.resolve("eh"))
+            assertNull(registry.resolve("jm"))
             manager.loadAndEnableAll()
-            assertEquals("provider", registry.resolve("eh"))
-            assertEquals("provider", registry.resolve("ex"))
+            assertEquals("eh-provider", registry.resolve("eh"))
+            assertEquals("eh-provider", registry.resolve("ex"))
+            assertEquals("jm-provider", registry.resolve("jm"))
             manager.close()
             assertNull(registry.resolve("eh"))
             assertNull(registry.resolve("ex"))
+            assertNull(registry.resolve("jm"))
         } finally {
             manager.close()
             root.deleteRecursively()

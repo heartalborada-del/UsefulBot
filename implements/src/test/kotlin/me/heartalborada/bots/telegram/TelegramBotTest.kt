@@ -35,6 +35,58 @@ import kotlin.test.assertTrue
 
 class TelegramBotTest {
     @Test
+    fun `manages messages with explicit chat targets`() {
+        val requests = mutableListOf<Pair<String, String>>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val method = chain.request().url.pathSegments.last()
+                val body = Buffer().also { buffer -> chain.request().body?.writeTo(buffer) }.readUtf8()
+                requests += method to body
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body("""{"ok":true,"result":true}""".toResponseBody("application/json".toMediaType()))
+                    .build()
+            }
+            .build()
+        val bot = TelegramBot(
+            token = "test-token",
+            apiBaseUrl = "https://telegram.test",
+            parentClient = client,
+            autoConnect = false,
+        )
+        val edited = MessageChain().apply {
+            add(PlainText("updated"))
+            add(ActionKeyboard(listOf(listOf(ActionButton("Open", "/open")))))
+        }
+
+        try {
+            assertTrue(bot.recallMessage(ChatType.GROUP, -100L, 7L))
+            assertTrue(bot.editMessage(ChatType.PRIVATE, 42L, 8L, edited))
+            assertTrue(bot.pinMessage(ChatType.GROUP, -100L, 9L, notify = true))
+            assertTrue(bot.unpinMessage(ChatType.GROUP, -100L, 9L))
+
+            assertEquals(
+                listOf("deleteMessage", "editMessageText", "pinChatMessage", "unpinChatMessage"),
+                requests.map { it.first },
+            )
+            val recall = JsonParser.parseString(requests[0].second).asJsonObject
+            assertEquals(-100L, recall["chat_id"].asLong)
+            assertEquals(7L, recall["message_id"].asLong)
+            val edit = JsonParser.parseString(requests[1].second).asJsonObject
+            assertEquals("updated", edit["text"].asString)
+            assertEquals("Open", edit.getAsJsonObject("reply_markup")
+                .getAsJsonArray("inline_keyboard")[0].asJsonArray[0].asJsonObject["text"].asString)
+            val pin = JsonParser.parseString(requests[2].second).asJsonObject
+            assertFalse(pin["disable_notification"].asBoolean)
+        } finally {
+            bot.close()
+        }
+    }
+
+    @Test
     fun `connect automatically registers the current Telegram command menu`() {
         val methods = CopyOnWriteArrayList<String>()
         val commandRequest = CompletableFuture<String>()

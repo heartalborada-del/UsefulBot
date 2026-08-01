@@ -42,7 +42,7 @@ class PingPlugin : UsefulBotPlugin {
   name: 'Ping',
   version: '1.0.0',
   main: 'example.PingPlugin',
-  apiVersion: 2,
+  apiVersion: 3,
   description: '提供 ping 命令',
 
   dependencies: [],
@@ -64,7 +64,7 @@ class PingPlugin : UsefulBotPlugin {
 - `version`：插件版本。
 - `main`：入口类完整类名，入口类必须有公开的无参构造函数。
 
-`apiVersion` 当前为 `2`。版本不兼容、ID 重复、依赖缺失或循环依赖都会阻止插件启用，但不会阻止其他插件和 Bot 运行。
+`apiVersion` 当前为 `3`。版本不兼容、ID 重复、依赖缺失或循环依赖都会阻止插件启用，但不会阻止其他插件和 Bot 运行。
 
 ## 依赖方式
 
@@ -98,12 +98,10 @@ val permissions = context.requireService(PermissionService::class.java)
 显式写入 `dependencies` 仍然合法。如果权限插件缺失、被禁用或启动失败，其他插件不会启用，
 从而保证命令执行前权限服务一定存在。
 
-## 配置与数据目录
+## 插件目录
 
-每个插件会获得两个自动创建的独立目录：
-
-- `PluginContext.configDirectory`：`plugins/<id>/config`，用于用户可编辑配置。
-- `PluginContext.dataDirectory`：`plugins/<id>/data`，用于状态、缓存和生成文件。
+每个插件只会获得一个自动创建的 `PluginContext.pluginDirectory`，默认路径为
+`plugins/<id>`。配置、状态、缓存和生成文件如何组织均由插件自行决定。
 
 插件不应把运行时文件写回 JAR，也不应直接使用其他插件的私有目录。
 
@@ -121,8 +119,8 @@ context.listen(MessageEvent::class.java, priority = EventPriority.NORMAL) { bot,
 
 公共事件类和 Bot 方法通过 `@SupportedBotTypes` 标注内置适配器支持范围，运行时也可以读取该注解：
 
-- NapCat + Telegram：`PrivateMessageEvent`、`GroupMessageEvent`、`BotOnlineEvent`、`BotOfflineEvent`，以及消息、转发、撤回和文件方法。
-- Telegram：`InlineQueryEvent`、`CallbackQueryEvent`、`answerInlineQuery`、`answerCallbackQuery`。
+- NapCat + Telegram：`PrivateMessageEvent`、`GroupMessageEvent`、`BotOnlineEvent`、`BotOfflineEvent`，以及消息、转发、定向撤回、置顶/取消置顶和文件方法。
+- Telegram：文本消息编辑、`InlineQueryEvent`、`CallbackQueryEvent`、`answerInlineQuery`、`answerCallbackQuery`。
 - NapCat：心跳、群通知、好友/加群请求事件，以及 `respondFriendRequest`、`respondGroupRequest`。
 
 Telegram 按钮回调会先发布事件。未拦截时，适配器会自动应答并继续把按钮数据作为命令分发；
@@ -137,15 +135,26 @@ context.listen(CallbackQueryEvent::class.java) { bot, event ->
 
 平台未实现的方法返回 `false`。NapCat 请求事件中的 `requestFlag` 应原样传给对应响应方法。
 
+消息操作建议使用包含会话目标的重载，它也能处理当前进程启动前产生的消息：
+
+```kotlin
+bot.recallMessage(ChatType.GROUP, groupId, messageId)
+bot.editMessage(ChatType.PRIVATE, userId, messageId, MessageChain.text("已更新"))
+bot.pinMessage(ChatType.GROUP, groupId, messageId)
+bot.unpinMessage(ChatType.GROUP, groupId, messageId)
+```
+
+旧的 `recallMessage(messageId)` 仍然保留，但 Telegram 只能在内存中仍有消息与会话映射时使用。
+NapCat 不支持编辑消息，且仅支持群消息的置顶操作。
+
 ## 内置插件
 
-EH、JM 和权限管理也使用相同插件生命周期：
+漫画功能和权限管理也使用相同插件生命周期：
 
-- `eh`：E-Hentai / ExHentai Provider，包含别名 `ex`。
-- `jm`：JMComic Provider。
+- `comic`：统一管理 `eh`、`ex` 和 `jm` Provider，数据分别位于 `plugins/comic/eh` 与 `plugins/comic/jm`。
 - `permissions`：持久化权限节点和动态封禁。
 
-它们会出现在健康状态的插件列表中。EH、JM 可以通过 `Plugins.Disabled` 单独关闭；
+它们会出现在健康状态的插件列表中。漫画功能可通过 `Plugins.Disabled` 中的 `comic` 关闭；
 权限管理属于基础内置插件，配置中的禁用请求会被忽略，也不能通过运行时 `unload` 卸载。
 程序退出仍会正常触发它的 `onDisable` 和 `onUnload`。
 `Plugins.Enabled` 只控制外部 JAR 扫描，不会一次性关闭全部内置插件。
@@ -263,5 +272,5 @@ permission grant qq:user:456 usefulbot.admin
 ```
 
 - `Enabled`：是否扫描和加载外部插件 JAR。
-- `Directory`：插件 JAR、插件配置和插件数据的根目录。
+- `Directory`：插件 JAR 和各插件私有目录的根目录。
 - `Disabled`：禁止启用的插件 ID，适用于外部插件和非基础内置插件；基础插件不受影响。
