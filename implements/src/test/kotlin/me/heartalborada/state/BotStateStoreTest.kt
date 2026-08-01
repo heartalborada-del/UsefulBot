@@ -2,6 +2,8 @@ package me.heartalborada.state
 
 import me.heartalborada.commons.ChatType
 import java.nio.file.Files
+import javax.sql.DataSource
+import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -11,10 +13,11 @@ class BotStateStoreTest {
     @Test
     fun `persists preferences tasks bans quotas and outbox`() {
         val directory = Files.createTempDirectory("bot-state-").toFile()
-        val file = directory.resolve("state.json")
         try {
-            val store = BotStateStore(file)
+            val databases = testStateDatabases(directory)
+            val store = databases.store()
             store.setBanned("tg:5", true)
+            store.setPermissionRule("tg:user:5", "comic.download", true)
             store.updatePreference("telegram", 5, UserPreference(language = "zh-CN", blurImages = false))
             assertTrue(store.consumeDailyDownload("telegram", 5, 1))
             assertFalse(store.consumeDailyDownload("telegram", 5, 1))
@@ -29,49 +32,57 @@ class BotStateStoreTest {
             assertEquals(1, store.retryAllDeliveries())
             assertEquals(1, store.dueDeliveries().size)
 
-            val restored = BotStateStore(file)
+            val restored = testStateDatabases(directory).store()
             assertTrue(restored.isBanned("tg:5"))
             assertFalse(restored.isBanned("qq:5"))
             assertEquals("zh-CN", restored.preference("telegram", 5).language)
             assertEquals("jm-1", restored.pendingTasks().single().id)
             assertEquals(1, restored.outboxSize())
-        } finally {
-            directory.deleteRecursively()
-        }
-    }
 
-    @Test
-    fun `legacy numeric bans are migrated to both scoped platforms`() {
-        val directory = Files.createTempDirectory("legacy-bot-state-").toFile()
-        val file = directory.resolve("state.json")
-        try {
-            file.writeText("""{"bannedUsers":[5]}""")
-            val store = BotStateStore(file)
-            assertTrue(store.isBanned("tg:5"))
-            assertTrue(store.isBanned("qq:5"))
-            store.setBanned("tg:5", false)
-            assertFalse(store.isBanned("tg:5"))
-            assertTrue(store.isBanned("qq:5"))
-        } finally {
-            directory.deleteRecursively()
-        }
-    }
-
-    @Test
-    fun `permission subject aliases are normalized and merged`() {
-        val directory = Files.createTempDirectory("permission-alias-state-").toFile()
-        val file = directory.resolve("state.json")
-        try {
-            file.writeText(
-                """{"permissions":{"telegram:*":["feature.read"],"tg:*":["-feature.write"],"napcat:user:7":["feature.read"]}}""",
+            assertEquals(setOf("USER_PREFERENCES"), tableNames(databases.host))
+            assertEquals(
+                setOf("COMIC_DAILY_USAGE", "COMIC_TASKS", "COMIC_TASK_SUBSCRIBERS", "COMIC_OUTBOX"),
+                tableNames(databases.comic),
             )
-
-            val store = BotStateStore(file)
-
-            assertEquals(setOf("feature.read", "-feature.write"), store.permissions("tg:*"))
-            assertEquals(setOf("feature.read"), store.permissions("qq:user:7"))
+            assertEquals(setOf("PERMISSION_BANS", "PERMISSION_RULES"), tableNames(databases.permissions))
         } finally {
             directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `concurrent delivery failures are updated atomically`() {
+        val directory = Files.createTempDirectory("concurrent-outbox-").toFile()
+        try {
+            val store = testStateStore(directory)
+            val delivery = OutboxDelivery(
+                adapter = "telegram",
+                chatType = ChatType.PRIVATE,
+                target = 5,
+                messageId = 9,
+                name = "a.pdf",
+                filePath = "a.pdf",
+                nextAttemptAt = 0,
+            )
+            store.enqueueDelivery(delivery)
+
+            List(16) {
+                thread { store.deliveryFailed(delivery.id, delayMillis = 0, maximumAttempts = 100) }
+            }.forEach(Thread::join)
+
+            assertEquals(16, store.dueDeliveries().single().attempts)
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    private fun tableNames(dataSource: DataSource): Set<String> = dataSource.connection.use { connection ->
+        connection.prepareStatement(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'PUBLIC'",
+        ).use { statement ->
+            statement.executeQuery().use { results ->
+                buildSet { while (results.next()) add(results.getString(1)) }
+            }
         }
     }
 }

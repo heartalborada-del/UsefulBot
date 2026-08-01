@@ -8,6 +8,8 @@ import kotlinx.coroutines.runBlocking
 import me.heartalborada.QueueExtraData
 import me.heartalborada.QueueUser
 import me.heartalborada.bots.napcat.Napcat
+import me.heartalborada.bots.napcat.NapcatCachedFileSender
+import me.heartalborada.bots.napcat.NapcatFileIdCache
 import me.heartalborada.bots.telegram.TelegramApiException
 import me.heartalborada.bots.telegram.TelegramBot
 import me.heartalborada.bots.telegram.TelegramFileIdCache
@@ -99,6 +101,7 @@ private val config = Config(File(rootFolder, "config.json"))
 private val dataFolder = File("data")
 private val pluginsFolder = File(rootFolder, config.getConfig().plugins.directory)
 private val comicPluginFolder = File(pluginsFolder, "comic")
+private val permissionPluginFolder = File(pluginsFolder, "permissions")
 private val ehDataFolder = File(comicPluginFolder, "eh")
 private val ehTempFolder = File(ehDataFolder, "temp")
 private val ehPdfFolder = File(ehDataFolder, "pdf")
@@ -113,14 +116,18 @@ private val logger = LoggerFactory.getLogger("Main")
 private val ALLOW_SUFFIX = setOf("jpg", "jpeg", "gif", "png", "webp")
 
 private val translator = PropertiesTranslator(config.getConfig().bot.language)
-private val economicDataSource = run {
-    dataFolder.mkdirs()
-    JdbcConnectionPool.create("jdbc:h2:./data/data;LOCK_TIMEOUT=10000", "sa", "").apply {
+private fun createDatabasePool(databaseFile: File): JdbcConnectionPool {
+    databaseFile.parentFile.mkdirs()
+    val databasePath = databaseFile.canonicalFile.invariantSeparatorsPath
+    return JdbcConnectionPool.create("jdbc:h2:file:$databasePath;LOCK_TIMEOUT=10000", "sa", "").apply {
         maxConnections = (config.getConfig().comicParallelCount + 4).coerceIn(8, 32)
         loginTimeout = 10
-        Runtime.getRuntime().addShutdownHook(Thread({ dispose() }, "economic-database-shutdown"))
     }
 }
+private val economicDataSource = createDatabasePool(File(dataFolder, "data"))
+private val comicDataSource = createDatabasePool(File(comicPluginFolder, "comic"))
+private val permissionDataSource = createDatabasePool(File(permissionPluginFolder, "permissions"))
+private val databasePools = listOf(economicDataSource, comicDataSource, permissionDataSource)
 private val economicDatabase = Database.connect(economicDataSource)
 private val economic = EconomicManager(economicDatabase)
 private lateinit var client: OkHttpClient
@@ -188,7 +195,7 @@ private val queue = ProcessingQueue<QueueUser, ComicTask, QueueExtraData>(
     taskId = ComicTask::id,
 )
 private val comicInformationPreviews = ConcurrentHashMap<ComicTask, ComicInformationPreview>()
-private val stateStore = BotStateStore(File(rootFolder, config.getConfig().tasks.stateFile))
+private val stateStore = BotStateStore(economicDataSource, comicDataSource, permissionDataSource)
 private val accessController = AccessController(config.getConfig().access, stateStore)
 private val translators = ConcurrentHashMap<String, Translator>()
 
@@ -260,6 +267,8 @@ private fun cleanupComicTaskCache(task: ComicTask) {
 
 fun main() = runBlocking {
     ComicDataMigration.migrate(rootFolder.canonicalFile, pluginsFolder.canonicalFile, logger)
+    val napcatFileIdCache = NapcatFileIdCache(economicDatabase)
+    val napcatFileSenders = ConcurrentHashMap<Napcat, NapcatCachedFileSender>()
     val telegramFileIdCache = TelegramFileIdCache(economicDatabase)
     val telegramLargeDocumentSenders = ConcurrentHashMap<TelegramBot, TelegramLargeDocumentSender>()
     val commandErrorLogger = CommandErrorLogger(File(rootFolder, "error"))
@@ -444,6 +453,12 @@ fun main() = runBlocking {
         pdf: File,
         pdfPassword: String?,
     ): Boolean {
+        if (bot is Napcat) {
+            val napcatFileSender = napcatFileSenders.computeIfAbsent(bot) {
+                NapcatCachedFileSender(bot, napcatFileIdCache)
+            }
+            return napcatFileSender.send(sender.type, sender.target, name, pdf)
+        }
         if (bot !is TelegramBot) {
             return bot.sendFile(sender.type, sender.target, name, pdf)
         }
@@ -1879,6 +1894,7 @@ fun main() = runBlocking {
         runCatching { console.close() }
         pluginManager.close()
         bots.asReversed().forEach { (bot, _) -> runCatching { bot.close() } }
+        databasePools.asReversed().forEach { pool -> runCatching { pool.dispose() } }
     }, "plugin-and-bot-shutdown"))
     val connectedBotCount = bots.count { (bot, _) ->
         runCatching { bot.connect() }

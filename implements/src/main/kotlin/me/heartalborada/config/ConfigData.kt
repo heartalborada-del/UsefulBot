@@ -23,7 +23,6 @@ data class ConfigData @JvmOverloads constructor(
 
     data class Tasks @JvmOverloads constructor(
         @SerializedName("UserCapacity") val userCapacity: Int = 5,
-        @SerializedName("StateFile") val stateFile: String = "data/bot-state.json",
     )
 
     data class Cache @JvmOverloads constructor(
@@ -126,7 +125,7 @@ data class ConfigData @JvmOverloads constructor(
     )
 
     companion object {
-        const val CURRENT_VERSION = 13
+        const val CURRENT_VERSION = 14
     }
 }
 

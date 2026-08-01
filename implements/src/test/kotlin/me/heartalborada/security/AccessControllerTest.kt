@@ -1,7 +1,7 @@
 package me.heartalborada.security
 
 import me.heartalborada.config.ConfigData
-import me.heartalborada.state.BotStateStore
+import me.heartalborada.state.testStateStore
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -12,7 +12,7 @@ class AccessControllerTest {
         val directory = Files.createTempDirectory("access-state-").toFile()
         try {
             var now = 1_000L
-            val state = BotStateStore(directory.resolve("state.json"))
+            val state = testStateStore(directory)
             val controller = AccessController(
                 ConfigData.Access(
                     commandsPerMinute = 1,

@@ -114,4 +114,20 @@ class NapcatForwardMessageTest {
         )
         assertNull(buildNapcatPinnedMessageParams(ChatType.PRIVATE, 456L, 123L))
     }
+
+    @Test
+    fun `extracts reusable file id from get message data`() {
+        val data = com.google.gson.JsonParser.parseString(
+            """
+                {
+                  "message":[
+                    {"type":"text","data":{"text":"file"}},
+                    {"type":"file","data":{"name":"comic.pdf","file":"comic.pdf","file_id":"reusable-id"}}
+                  ]
+                }
+            """.trimIndent(),
+        ).asJsonObject
+
+        assertEquals("reusable-id", extractNapcatFileId(data, messageGson))
+    }
 }

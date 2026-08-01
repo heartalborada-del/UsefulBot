@@ -30,14 +30,14 @@ Windows：
 
 ```powershell
 .\gradlew.bat --no-daemon build
-java -jar .\implements\build\libs\UsefulBot-1.3.0.jar
+java -jar .\implements\build\libs\UsefulBot-1.5.0.jar
 ```
 
 Linux / macOS：
 
 ```bash
 ./gradlew --no-daemon build
-java -jar ./implements/build/libs/UsefulBot-1.3.0.jar
+java -jar ./implements/build/libs/UsefulBot-1.5.0.jar
 ```
 
 普通 JAR 是动态 Loader，首次运行时会从 Maven Central 下载锁定版本的依赖，并校验 SHA-256。依赖默认缓存到
@@ -46,10 +46,10 @@ Loader JAR 相同目录下的 `deps` 文件夹，后续运行直接复用。可�
 Loader 会通过公网出口 IP 检测国家代码；检测为中国大陆时优先使用阿里云 Maven 镜像，失败后自动回退 Maven
 Central。可通过 `-Dusefulbot.mavenRegion=CN` 强制使用中国区策略，或显式指定仓库以跳过 IP 属地检测。
 
-构建同时会生成无需联网的 `UsefulBot-1.3.0-all.jar`。只解析和缓存依赖而不启动机器人时，可执行：
+构建同时会生成无需联网的 `UsefulBot-1.5.0-all.jar`。只解析和缓存依赖而不启动机器人时，可执行：
 
 ```bash
-java -jar ./implements/build/libs/UsefulBot-1.3.0.jar --resolve-dependencies-only
+java -jar ./implements/build/libs/UsefulBot-1.5.0.jar --resolve-dependencies-only
 ```
 
 首次运行会在当前工作目录生成 `config.json`。修改配置后需要重启程序。
@@ -102,8 +102,7 @@ java -jar ./implements/build/libs/UsefulBot-1.3.0.jar --resolve-dependencies-onl
     "DailyDownloadLimit": 20
   },
   "Tasks": {
-    "UserCapacity": 5,
-    "StateFile": "data/bot-state.json"
+    "UserCapacity": 5
   },
   "Cache": {
     "MaxSizeMiB": 10240,
@@ -136,7 +135,7 @@ java -jar ./implements/build/libs/UsefulBot-1.3.0.jar --resolve-dependencies-onl
 ### 访问与运行策略
 
 - `CommandsPerMinute` 和 `DailyDownloadLimit`：`0` 表示不限制。
-- 用户、群和多平台访问由内置 `permissions` 插件管理；`Tasks.StateFile` 保存权限、动态封禁、待恢复任务、失败补发、每日额度和用户偏好。
+- 用户、群和多平台访问由内置 `permissions` 插件管理；权限规则和动态封禁保存在插件自己的 H2 数据库中。
 - 首次启动可在 JLine 控制台执行 `permission grant tg:user:<id> usefulbot.admin`（QQ 使用 `qq:user:<id>`）授予管理员权限。
 - 控制台只补全并执行显式包含 `ALLOW_CONSOLE` 的命令；当前包括 `health`、`admin` 和 `permission` 的管理子命令。
 - `permissions` 是基础内置插件，不能通过 `Plugins.Disabled` 或运行时卸载关闭；EH/JM 统一属于 `comic` 插件，可整体禁用。
@@ -264,20 +263,22 @@ Telegram 适配器连接成功后会调用 `setMyCommands`，根据程序实际�
 
 ```text
 plugins/
-└─ comic/
-   ├─ eh/          # E-Hentai 归档、图片、PDF 与临时文件
-   └─ jm/          # JMComic 图片、PDF 与临时文件
+├─ comic/
+│  ├─ comic.mv.db  # 漫画任务、订阅、补发队列和每日下载额度
+│  ├─ eh/           # E-Hentai 归档、图片、PDF 与临时文件
+│  └─ jm/           # JMComic 图片、PDF 与临时文件
+└─ permissions/
+   └─ permissions.mv.db  # 权限规则和动态封禁
 
 data/
 ├─ telegram/temp/  # Telegram PDF 分卷临时目录
-├─ bot-state.json  # 待恢复任务、补发箱、访问状态和用户偏好
-└─ data.*          # 独立的经济与 Telegram 文件缓存 H2 数据库
+└─ data.mv.db      # 经济、Telegram/NapCat 文件 ID 缓存和用户偏好
 ```
 
 启动时会把旧的 `data/eh`、`data/jm`、`plugins/eh/data` 和 `plugins/jm/data`
 合并迁移到 `plugins/comic`。已存在的目标文件不会被覆盖。
 
-GP 数据使用 H2 持久化，用户主键直接保存为 `tg:<id>` 或 `qq:<id>`。数据库文件为 `data/data.mv.db`；本版本不迁移旧的 `data/gp.mv.db`，升级时应删除旧库并让程序重新创建。请在程序停止后备份数据库，避免得到不一致的文件快照。
+所有运行状态均使用 H2 持久化，不再读写 `bot-state.json`。GP 用户主键直接保存为 `tg:<id>` 或 `qq:<id>`。本版本不迁移旧的 `data/gp.mv.db`，升级时应删除旧库并让程序重新创建。请在程序停止后备份数据库，避免得到不一致的文件快照。
 
 ## 错误报告
 

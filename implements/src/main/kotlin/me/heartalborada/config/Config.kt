@@ -95,6 +95,7 @@ internal object ConfigMigration {
                 10 -> Unit
                 11 -> migrateV11ToV12(root)
                 12 -> migrateV12ToV13(root)
+                13 -> migrateV13ToV14(root)
                 else -> error("No config migration is available for version $version.")
             }
             version++
@@ -229,6 +230,13 @@ internal object ConfigMigration {
             .forEach(migrated::add)
         if (ids.none { it.equals("comic", ignoreCase = true) }) migrated.add("comic")
         plugins.add("Disabled", migrated)
+    }
+
+    private fun migrateV13ToV14(root: JsonObject) {
+        root.get("Tasks")
+            ?.takeIf { it.isJsonObject }
+            ?.asJsonObject
+            ?.remove("StateFile")
     }
 
     private fun normalizeSection(parent: JsonObject, canonicalName: String, legacyName: String): JsonObject {

@@ -5,4 +5,6 @@ data class FileInfo(
     val size: Long = -1,
     val id: String? = null,
     val url: String? = null,
+    val path: String? = null,
+    val uniqueId: String? = null,
 )

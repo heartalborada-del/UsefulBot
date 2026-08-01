@@ -5,10 +5,16 @@ import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.At
 import me.heartalborada.commons.bots.ActionButton
 import me.heartalborada.commons.bots.ActionKeyboard
+import me.heartalborada.commons.bots.Contact
+import me.heartalborada.commons.bots.Dice
+import me.heartalborada.commons.bots.File as FileMessage
 import me.heartalborada.commons.bots.Image
+import me.heartalborada.commons.bots.Location
 import me.heartalborada.commons.bots.MessageChain
 import me.heartalborada.commons.bots.PlainText
+import me.heartalborada.commons.bots.Record
 import me.heartalborada.commons.bots.Reply
+import me.heartalborada.commons.bots.Video
 import me.heartalborada.commons.bots.dto.FileInfo
 import me.heartalborada.commons.bots.dto.ForwardMessageNode
 import me.heartalborada.commons.bots.events.message.InlineQueryEvent
@@ -30,6 +36,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -140,6 +147,44 @@ class TelegramBotTest {
         assertEquals("/help", normalizeTelegramCommand("/help", "usefulbot"))
         assertEquals("plain text", normalizeTelegramCommand("plain text", "usefulbot"))
         assertNull(normalizeTelegramCommand("/help@OtherBot", "usefulbot"))
+    }
+
+    @Test
+    fun `maps Telegram media into common message segments`() {
+        val chain = telegramMessageChain(
+            JsonParser.parseString(
+                """
+                    {
+                      "reply_to_message":{"message_id":7},
+                      "photo":[
+                        {"file_id":"small","file_unique_id":"photo-unique","file_size":10},
+                        {"file_id":"large","file_unique_id":"photo-unique","file_size":20}
+                      ],
+                      "document":{"file_name":"document.pdf","file_id":"document-id","file_unique_id":"document-unique","file_size":30},
+                      "voice":{"file_id":"voice-id","file_unique_id":"voice-unique","file_size":40},
+                      "video":{"file_name":"video.mp4","file_id":"video-id","file_unique_id":"video-unique","file_size":50},
+                      "location":{"latitude":1.25,"longitude":2.5},
+                      "contact":{"user_id":42},
+                      "dice":{"value":6},
+                      "caption":"caption"
+                    }
+                """.trimIndent(),
+            ).asJsonObject,
+        )
+
+        assertEquals(7L, assertIs<Reply>(chain[0]).id)
+        val image = assertIs<Image>(chain[1])
+        assertEquals("large", image.info.id)
+        assertEquals("photo-unique", image.info.uniqueId)
+        val file = assertIs<FileMessage>(chain[2])
+        assertEquals("document-id", file.info.id)
+        assertEquals("document-unique", file.info.uniqueId)
+        assertEquals("voice-id", assertIs<Record>(chain[3]).info.id)
+        assertEquals("video-id", assertIs<Video>(chain[4]).info.id)
+        assertEquals("1.25", assertIs<Location>(chain[5]).latitude)
+        assertEquals(Contact.ContactType.TELEGRAM, assertIs<Contact>(chain[6]).type)
+        assertEquals(6, assertIs<Dice>(chain[7]).result)
+        assertEquals("caption", assertIs<PlainText>(chain[8]).text)
     }
 
     @Test

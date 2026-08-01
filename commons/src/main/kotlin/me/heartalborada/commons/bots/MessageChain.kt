@@ -41,7 +41,11 @@ class AtAll : AbstractMessageObject() {
     }
 }
 
-class Image(val info: FileInfo) : AbstractMessageObject() {
+class Image(
+    val info: FileInfo,
+    val summary: String? = null,
+    val subType: String? = null,
+) : AbstractMessageObject() {
     override fun toString(): String {
         return "[Image]"
     }
@@ -51,6 +55,14 @@ class File(val info: FileInfo) : AbstractMessageObject() {
     override fun toString(): String {
         return "[File${info.name}]"
     }
+}
+
+class Record(val info: FileInfo) : AbstractMessageObject() {
+    override fun toString(): String = "[Record:${info.name}]"
+}
+
+class Video(val info: FileInfo, val thumbnail: String? = null) : AbstractMessageObject() {
+    override fun toString(): String = "[Video:${info.name}]"
 }
 
 class Face(val id: String) : AbstractMessageObject() {
@@ -69,6 +81,19 @@ class Forward(val id: String) : AbstractMessageObject() {
     override fun toString(): String {
         return "[Forward:$id]"
     }
+}
+
+class ForwardNode(
+    val id: String? = null,
+    val content: MessageChain? = null,
+    val userId: Long? = null,
+    val nickname: String? = null,
+) : AbstractMessageObject() {
+    init {
+        require(id != null || content != null) { "A forward node requires an existing message ID or content." }
+    }
+
+    override fun toString(): String = "[Node:${id ?: nickname.orEmpty()}]"
 }
 
 class Dice(val result: Int) : AbstractMessageObject() {
@@ -108,7 +133,8 @@ class Contact(val type: ContactType, val id: Long) : AbstractMessageObject() {
 
     enum class ContactType(val value: String) {
         QQ("qq"),
-        GROUP("group");
+        GROUP("group"),
+        TELEGRAM("telegram");
 
         companion object {
             fun fromValue(value: String): ContactType {
@@ -135,6 +161,47 @@ class Json(val data: String) : AbstractMessageObject() {
     override fun toString(): String {
         return "[Json:$data]"
     }
+}
+
+sealed class Music : AbstractMessageObject() {
+    class Standard(val source: Source, val id: String) : Music() {
+        override fun toString(): String = "[Music:${source.value}:$id]"
+    }
+
+    class Custom(
+        val url: String,
+        val audio: String,
+        val title: String,
+        val image: String? = null,
+        val singer: String? = null,
+    ) : Music() {
+        override fun toString(): String = "[Music:$title]"
+    }
+
+    enum class Source(val value: String) {
+        QQ("qq"),
+        NETEASE("163"),
+        KUGOU("kugou"),
+        MIGU("migu"),
+        KUWO("kuwo");
+
+        companion object {
+            fun fromValue(value: String): Source = entries.first { it.value == value }
+        }
+    }
+}
+
+class MarketFace(
+    val emojiId: String,
+    val emojiPackageId: String,
+    val key: String,
+    val summary: String? = null,
+) : AbstractMessageObject() {
+    override fun toString(): String = summary ?: "[MarketFace:$emojiId]"
+}
+
+class Shake : AbstractMessageObject() {
+    override fun toString(): String = "[Shake]"
 }
 
 class Markdown(val content: String) : AbstractMessageObject() {

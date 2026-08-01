@@ -47,6 +47,7 @@ bin/
 
 data/
 /plugins/
+/implements/plugins/
 /error/
 Test.kt
 /.idea/dataSources.xml

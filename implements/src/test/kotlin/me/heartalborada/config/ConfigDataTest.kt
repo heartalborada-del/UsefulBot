@@ -371,6 +371,25 @@ class ConfigDataTest {
         }
     }
 
+    @Test
+    fun `version thirteen config removes json state file setting`() {
+        val configFile = Files.createTempFile("useful-bot-v13-config-", ".json").toFile()
+        try {
+            configFile.writeText(
+                """{"version":13,"Tasks":{"UserCapacity":3,"StateFile":"data/bot-state.json"}}""",
+            )
+
+            val config = Config(configFile).getConfig()
+
+            assertEquals(3, config.tasks.userCapacity)
+            assertEquals(ConfigData.CURRENT_VERSION, config.version)
+            val tasks = JsonParser.parseString(configFile.readText()).asJsonObject.getAsJsonObject("Tasks")
+            assertFalse(tasks.has("StateFile"))
+        } finally {
+            configFile.delete()
+        }
+    }
+
     private fun assertAllDefaultFieldsPresent(actual: JsonObject, defaults: JsonObject, path: String = "") {
         defaults.entrySet().forEach { (key, defaultValue) ->
             val fieldPath = if (path.isEmpty()) key else "$path.$key"

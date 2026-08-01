@@ -4,7 +4,7 @@ import me.heartalborada.commons.permissions.PermissionContext
 import me.heartalborada.commons.permissions.PermissionDefault
 import me.heartalborada.commons.permissions.PermissionSubject
 import me.heartalborada.commons.permissions.PermissionSubjectType
-import me.heartalborada.state.BotStateStore
+import me.heartalborada.state.testStateStore
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -17,7 +17,7 @@ class PersistentPermissionServiceTest {
     fun `permission node suggestions are normalized filtered and reference counted`() {
         val directory = Files.createTempDirectory("permission-node-registry-").toFile()
         try {
-            val service = PersistentPermissionService(BotStateStore(directory.resolve("state.json")))
+            val service = PersistentPermissionService(testStateStore(directory))
             service.register("EH.Query")
             service.register("eh.query")
             service.register("eh.search")
@@ -40,7 +40,7 @@ class PersistentPermissionServiceTest {
         val qqGroup = subject("qq", PermissionSubjectType.GROUP, 100)
         val tgUser = subject("tg", PermissionSubjectType.USER, 2)
         try {
-            val service = PersistentPermissionService(BotStateStore(directory.resolve("state.json")))
+            val service = PersistentPermissionService(testStateStore(directory))
             service.grant(PermissionSubject.all(), "feature.*")
             assertTrue(service.hasPermission(PermissionContext(qqUser), "feature.read"))
             assertTrue(service.hasPermission(PermissionContext(tgUser), "feature.read"))
@@ -70,14 +70,15 @@ class PersistentPermissionServiceTest {
     @Test
     fun `specific deny overrides wildcard allow and explicit plus is accepted`() {
         val directory = Files.createTempDirectory("permission-specificity-").toFile()
-        val stateFile = directory.resolve("state.json")
         val user = subject("tg", PermissionSubjectType.USER, 2)
         val exceptionUser = subject("tg", PermissionSubjectType.USER, 3)
         try {
-            stateFile.writeText(
-                """{"permissions":{"tg:user:2":["+a.b.*","-a.b.c"],"tg:user:3":["-a.b.*","+a.b.c"]}}""",
-            )
-            val service = PersistentPermissionService(BotStateStore(stateFile))
+            val state = testStateStore(directory)
+            state.setPermissionRule(user.key, "a.b.*", true)
+            state.setPermissionRule(user.key, "a.b.c", false)
+            state.setPermissionRule(exceptionUser.key, "a.b.*", false)
+            state.setPermissionRule(exceptionUser.key, "a.b.c", true)
+            val service = PersistentPermissionService(state)
 
             assertFalse(service.hasPermission(PermissionContext(user), "a.b.c"))
             assertTrue(service.hasPermission(PermissionContext(user), "a.b.d"))
@@ -94,7 +95,7 @@ class PersistentPermissionServiceTest {
         val user = subject("tg", PermissionSubjectType.USER, 2)
         val group = subject("tg", PermissionSubjectType.GROUP, -100)
         try {
-            val service = PersistentPermissionService(BotStateStore(directory.resolve("state.json")))
+            val service = PersistentPermissionService(testStateStore(directory))
             service.grant(user, "a.b.*")
             service.deny(group, "a.b.c")
 
@@ -108,12 +109,11 @@ class PersistentPermissionServiceTest {
     @Test
     fun `resolves user group fallback deny and platform isolation across restarts`() {
         val directory = Files.createTempDirectory("permission-service-").toFile()
-        val stateFile = directory.resolve("state.json")
         val tgUser = subject("tg", PermissionSubjectType.USER, 2)
         val tgGroup = subject("tg", PermissionSubjectType.GROUP, -100)
         val qqUser = subject("qq", PermissionSubjectType.USER, 2)
         try {
-            var state = BotStateStore(stateFile)
+            var state = testStateStore(directory)
             var service = PersistentPermissionService(state)
 
             val tgAdmin = subject("tg", PermissionSubjectType.USER, 1)
@@ -133,7 +133,7 @@ class PersistentPermissionServiceTest {
             assertTrue(service.clear(tgUser, "gallery.download.eh"))
             assertTrue(service.hasPermission(PermissionContext(tgUser, tgGroup), "gallery.download.eh"))
 
-            state = BotStateStore(stateFile)
+            state = testStateStore(directory)
             service = PersistentPermissionService(state)
             assertEquals(setOf("gallery.download"), service.rules(tgGroup))
             assertTrue(service.hasPermission(PermissionContext(tgUser, tgGroup), "gallery.download.jm"))

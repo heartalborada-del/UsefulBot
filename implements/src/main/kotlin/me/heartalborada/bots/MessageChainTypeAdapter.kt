@@ -1,239 +1,221 @@
 package me.heartalborada.bots
 
-import com.google.gson.Gson
+import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.TypeAdapter
+import com.google.gson.internal.Streams
 import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonWriter
 import me.heartalborada.commons.bots.*
 import me.heartalborada.commons.bots.dto.FileInfo
 import okhttp3.internal.toLongOrDefault
 
-class MessageChainTypeAdapter : TypeAdapter<MessageChain>() {
+class MessageChainTypeAdapter(
+    private val allowMarkdown: Boolean = false,
+) : TypeAdapter<MessageChain>() {
     override fun write(writer: JsonWriter, chain: MessageChain) {
-        writer.beginArray()
-        var isFirst = true
-        chain.forEach {
-            if (it is Markdown || it is File) return@forEach
-            writer.beginObject()
-            when (it) {
-                is PlainText -> {
-                    writer.name("type").value("text")
-                    writer.name("data")
-                    writer.beginObject()
-                    writer.name("text").value(it.text)
-                    writer.endObject()
-                }
-
-                is At -> {
-                    writer.name("type").value("at")
-                    writer.name("data")
-                    writer.beginObject()
-                    writer.name("qq").value(it.target)
-                    writer.endObject()
-                }
-
-                is AtAll -> {
-                    writer.name("type").value("at")
-                    writer.name("data")
-                    writer.beginObject()
-                    writer.name("qq").value("all")
-                    writer.endObject()
-                }
-
-                is Image -> {
-                    writer.name("type").value("image")
-                    writer.name("data")
-                    writer.beginObject()
-                    writer.name("url").value(it.info.url)
-                    writer.endObject()
-                }
-
-                is Face -> {
-                    writer.name("type").value("face")
-                    writer.name("data")
-                    writer.beginObject()
-                    writer.name("id").value(it.id)
-                    writer.endObject()
-                }
-
-                is Reply -> {
-                    if (isFirst) {
-                        writer.name("type").value("reply")
-                        writer.name("data")
-                        writer.beginObject()
-                        writer.name("id").value(it.id)
-                        writer.endObject()
-                    }
-                }
-
-                is Dice -> writer.name("type").value("dice")
-                is Rps -> writer.name("type").value("rps")
-                is Poke -> {
-                    writer.name("type").value("poke")
-                    writer.name("data")
-                    writer.beginObject()
-                    writer.name("id").value(it.id)
-                    writer.name("type").value(it.type)
-                    writer.endObject()
-                }
-
-                is Share -> {
-                    writer.name("type").value("share")
-                    writer.name("data")
-                    writer.beginObject()
-                    writer.name("title").value(it.title)
-                    writer.name("url").value(it.url)
-                    if (it.content != null) writer.name("content").value(it.content)
-                    if (it.imageUrl != null) writer.name("image").value(it.imageUrl)
-                    writer.endObject()
-                }
-
-                is Contact -> {
-                    writer.name("type").value("contact")
-                    writer.name("data")
-                    writer.beginObject()
-                    writer.name("id").value(it.id)
-                    writer.name("type").value(it.type.value)
-                    writer.endObject()
-                }
-
-                is Location -> {
-                    writer.name("type").value("location")
-                    writer.name("data")
-                    writer.beginObject()
-                    writer.name("lat").value(it.latitude)
-                    writer.name("lon").value(it.longitude)
-                    if (it.title != null) writer.name("title").value(it.title)
-                    if (it.content != null) writer.name("content").value(it.content)
-                    writer.endObject()
-                }
-
-                is ActionKeyboard -> {
-                    writer.name("type").value("text")
-                    writer.name("data")
-                    writer.beginObject()
-                    writer.name("text").value(it.toString())
-                    writer.endObject()
-                }
-
-                is Xml -> {
-                    writer.name("type").value("xml")
-                    writer.name("data")
-                    writer.beginObject()
-                    writer.name("data").value(it.data)
-                    writer.endObject()
-                }
-
-                is Json -> {
-                    writer.name("type").value("json")
-                    writer.name("data")
-                    writer.beginObject()
-                    writer.name("data").value(it.data)
-                    writer.endObject()
-                }
-
-            }
-            isFirst = false
-            writer.endObject()
-        }
-        writer.endArray()
+        Streams.write(serializeChain(chain), writer)
     }
 
     override fun read(reader: JsonReader): MessageChain {
-        val chain = MessageChain()
-        reader.beginArray()
-        while (reader.hasNext()) {
-            reader.beginObject()
-            var type: String? = null
-            var data: JsonObject? = null
-            while (reader.hasNext()) {
-                when (reader.nextName()) {
-                    "type" -> type = reader.nextString()
-                    "data" -> data = JsonParser.parseReader(reader).asJsonObject
-                }
-            }
-            when (type) {
-                "text" -> chain.add(PlainText(data!!.getAsJsonPrimitive("text").asString))
-                "at" -> {
-                    val qq = data!!.getAsJsonPrimitive("qq").asString
-                    if (qq == "all") {
-                        chain.add(AtAll())
-                    } else {
-                        chain.add(At(qq.toLongOrDefault(-1)))
-                    }
-                }
-
-                "image" -> {
-                    val file = data!!.getAsJsonPrimitive("file").asString
-                    val info = FileInfo(
-                        file,
-                        data.stringOrNull("file_size")?.toLongOrNull() ?: -1,
-                        file,
-                        data.stringOrNull("url")
-                    )
-                    chain.add(Image(info))
-                }
-
-                "file" -> {
-                    val info = FileInfo(
-                        data!!.getAsJsonPrimitive("file").asString,
-                        data.stringOrNull("file_size")?.toLongOrNull() ?: -1,
-                        data.stringOrNull("file_id")
-                    )
-                    chain.add(File(info))
-                }
-
-                "face" -> chain.add(Face(data!!.getAsJsonPrimitive("id").asString))
-                "reply" -> chain.add(Reply(data!!.getAsJsonPrimitive("id").asString.toLongOrDefault(-1)))
-                "forward" -> chain.add(Forward(data!!.getAsJsonPrimitive("id").asString))
-                "dice" -> chain.add(Dice(data!!.getAsJsonPrimitive("result").asInt))
-                "rps" -> chain.add(Rps(Rps.RpsResult.fromValue(data!!.getAsJsonPrimitive("result").asInt)))
-                "poke" -> chain.add(
-                    Poke(
-                        data!!.getAsJsonPrimitive("id").asString.toIntOrNull() ?: -1,
-                        data.getAsJsonPrimitive("type").asString.toIntOrNull() ?: -1
-                    )
-                )
-
-                "share" -> chain.add(
-                    Share(
-                        data!!.getAsJsonPrimitive("title").asString,
-                        data.getAsJsonPrimitive("url").asString,
-                        data.stringOrNull("content"),
-                        data.stringOrNull("image")
-                    )
-                )
-
-                "contact" -> {
-                    val id = data!!.getAsJsonPrimitive("id").asString.toLongOrDefault(-1)
-                    val type = Contact.ContactType.fromValue(data.getAsJsonPrimitive("type").asString)
-                    chain.add(Contact(type, id))
-                }
-
-                "location" -> chain.add(
-                    Location(
-                        data!!.getAsJsonPrimitive("lat").asString,
-                        data.getAsJsonPrimitive("lon").asString,
-                        data.stringOrNull("title"),
-                        data.stringOrNull("content"),
-                    )
-                )
-
-                "xml" -> chain.add(Xml(data!!.getAsJsonPrimitive("data").asString))
-                "json" -> chain.add(Json(data!!.getAsJsonPrimitive("data").asString))
-                "markdown" -> chain.add(Markdown(data!!.getAsJsonPrimitive("content").asString))
-                else -> chain.add(Unknown(Gson().toJson(data)))
-            }
-            reader.endObject()
-        }
-        reader.endArray()
-        return chain
+        val value = JsonParser.parseReader(reader)
+        if (!value.isJsonArray) return MessageChain()
+        return fromJson(value.asJsonArray)
     }
+
+    private fun serializeChain(chain: MessageChain): JsonArray = JsonArray().apply {
+        chain.mapNotNull(::serializeSegment).forEach(::add)
+    }
+
+    private fun serializeSegment(message: AbstractMessageObject): JsonObject? {
+        val data = JsonObject()
+        val type = when (message) {
+            is PlainText -> "text".also { data.addProperty("text", message.text) }
+            is At -> "at".also { data.addProperty("qq", message.target) }
+            is AtAll -> "at".also { data.addProperty("qq", "all") }
+            is Image -> "image".also {
+                data.addProperty("file", message.info.resource())
+                data.addOptional("name", message.info.name)
+                data.addOptional("summary", message.summary)
+                data.addOptional("sub_type", message.subType)
+            }
+            is Record -> "record".also {
+                data.addProperty("file", message.info.resource())
+                data.addOptional("name", message.info.name)
+            }
+            is Video -> "video".also {
+                data.addProperty("file", message.info.resource())
+                data.addOptional("name", message.info.name)
+                data.addOptional("thumb", message.thumbnail)
+            }
+            is Face -> "face".also { data.addProperty("id", message.id) }
+            is Reply -> "reply".also { data.addProperty("id", message.id) }
+            is Forward -> "forward".also { data.addProperty("id", message.id) }
+            is ForwardNode -> "node".also {
+                data.addOptional("id", message.id)
+                message.content?.let { content -> data.add("content", serializeChain(content)) }
+                message.userId?.let { userId -> data.addProperty("user_id", userId) }
+                data.addOptional("nickname", message.nickname)
+            }
+            is Dice -> "dice"
+            is Rps -> "rps"
+            is Contact -> if (message.type != Contact.ContactType.TELEGRAM) "contact".also {
+                data.addProperty("type", message.type.value)
+                data.addProperty("id", message.id)
+            } else return null
+            is Music.Standard -> "music".also {
+                data.addProperty("type", message.source.value)
+                data.addProperty("id", message.id)
+            }
+            is Music.Custom -> "music".also {
+                data.addProperty("type", "custom")
+                data.addProperty("url", message.url)
+                data.addProperty("audio", message.audio)
+                data.addProperty("title", message.title)
+                data.addOptional("image", message.image)
+                data.addOptional("singer", message.singer)
+            }
+            is Json -> "json".also { data.addProperty("data", message.data) }
+            is MarketFace -> "mface".also {
+                data.addProperty("emoji_id", message.emojiId)
+                data.addProperty("emoji_package_id", message.emojiPackageId)
+                data.addProperty("key", message.key)
+                data.addOptional("summary", message.summary)
+            }
+            is File -> "file".also {
+                data.addProperty("file", message.info.resource())
+                data.addOptional("name", message.info.name)
+            }
+            is Markdown -> if (allowMarkdown) {
+                "markdown".also { data.addProperty("content", message.content) }
+            } else {
+                return null
+            }
+            is ActionKeyboard -> "text".also { data.addProperty("text", message.toString()) }
+            is Poke, is Shake, is Share, is Location, is Xml, is Unknown -> return null
+            else -> return null
+        }
+        return JsonObject().apply {
+            addProperty("type", type)
+            add("data", data)
+        }
+    }
+
+    private fun fromJson(segments: JsonArray): MessageChain = MessageChain().apply {
+        segments.forEach { value ->
+            val raw = value.takeIf { it.isJsonObject }?.asJsonObject
+            val type = raw?.stringOrNull("type")
+            val data = raw?.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
+            add(fromJson(type, data) ?: Unknown(raw?.toString() ?: value.toString()))
+        }
+    }
+
+    private fun fromJson(type: String?, data: JsonObject?): AbstractMessageObject? {
+        if (type == null || data == null) return null
+        return when (type) {
+            "text" -> data.stringOrNull("text")?.let(::PlainText)
+            "face" -> data.stringOrNull("id")?.let(::Face)
+            "image" -> Image(
+                info = data.fileInfo(fallbackIdToFile = true),
+                summary = data.stringOrNull("summary"),
+                subType = data.stringOrNull("sub_type"),
+            )
+            "record" -> Record(data.fileInfo(fallbackIdToFile = true))
+            "video" -> Video(data.fileInfo(fallbackIdToFile = true), data.stringOrNull("thumb"))
+            "at" -> when (val target = data.stringOrNull("qq")) {
+                null -> null
+                "all" -> AtAll()
+                else -> At(target.toLongOrDefault(-1))
+            }
+            "rps" -> data.intOrNull("result")?.let { Rps(Rps.RpsResult.fromValue(it)) }
+            "dice" -> data.intOrNull("result")?.let(::Dice)
+            "shake" -> Shake()
+            "poke" -> Poke(data.intOrNull("id") ?: -1, data.intOrNull("type") ?: -1)
+            "share" -> Share(
+                title = data.stringOrNull("title").orEmpty(),
+                url = data.stringOrNull("url").orEmpty(),
+                content = data.stringOrNull("content"),
+                imageUrl = data.stringOrNull("image"),
+            )
+            "contact" -> runCatching {
+                Contact(
+                    Contact.ContactType.fromValue(data.stringOrNull("type").orEmpty()),
+                    data.stringOrNull("id")?.toLongOrDefault(-1) ?: -1,
+                )
+            }.getOrNull()
+            "location" -> Location(
+                latitude = data.stringOrNull("lat").orEmpty(),
+                longitude = data.stringOrNull("lon").orEmpty(),
+                title = data.stringOrNull("title"),
+                content = data.stringOrNull("content"),
+            )
+            "music" -> music(data)
+            "reply" -> data.stringOrNull("id")?.toLongOrDefault(-1)?.let(::Reply)
+            "forward" -> data.stringOrNull("id")?.let(::Forward)
+            "node" -> node(data)
+            "json" -> data.stringOrNull("data")?.let(::Json)
+            "mface" -> MarketFace(
+                emojiId = data.stringOrNull("emoji_id").orEmpty(),
+                emojiPackageId = data.stringOrNull("emoji_package_id").orEmpty(),
+                key = data.stringOrNull("key").orEmpty(),
+                summary = data.stringOrNull("summary"),
+            )
+            "file" -> File(data.fileInfo())
+            "markdown" -> data.stringOrNull("content")?.let(::Markdown)
+            "xml" -> data.stringOrNull("data")?.let(::Xml)
+            else -> null
+        }
+    }
+
+    private fun music(data: JsonObject): Music? = when (val source = data.stringOrNull("type")) {
+        "custom" -> Music.Custom(
+            url = data.stringOrNull("url").orEmpty(),
+            audio = data.stringOrNull("audio").orEmpty(),
+            title = data.stringOrNull("title").orEmpty(),
+            image = data.stringOrNull("image"),
+            singer = data.stringOrNull("singer"),
+        )
+        null -> null
+        else -> runCatching {
+            Music.Standard(Music.Source.fromValue(source), data.stringOrNull("id").orEmpty())
+        }.getOrNull()
+    }
+
+    private fun node(data: JsonObject): ForwardNode? {
+        val id = data.stringOrNull("id")
+        val content = data.get("content")?.takeIf { it.isJsonArray }?.asJsonArray?.let(::fromJson)
+        if (id == null && content == null) return null
+        return ForwardNode(
+            id = id,
+            content = content,
+            userId = data.stringOrNull("user_id")?.toLongOrNull(),
+            nickname = data.stringOrNull("nickname"),
+        )
+    }
+}
+
+private fun FileInfo.resource(): String = id ?: url ?: name
+
+private fun JsonObject.fileInfo(fallbackIdToFile: Boolean = false): FileInfo {
+    val file = stringOrNull("file").orEmpty()
+    return FileInfo(
+        name = stringOrNull("name") ?: file,
+        size = stringOrNull("file_size")?.toLongOrNull() ?: -1,
+        id = stringOrNull("file_id") ?: file.takeIf { fallbackIdToFile },
+        url = stringOrNull("url"),
+        path = stringOrNull("path"),
+        uniqueId = stringOrNull("file_unique"),
+    )
+}
+
+private fun JsonObject.addOptional(name: String, value: String?) {
+    value?.takeIf(String::isNotBlank)?.let { addProperty(name, it) }
 }
 
 private fun JsonObject.stringOrNull(name: String): String? {
     val value = get(name) ?: return null
     return if (value.isJsonPrimitive) value.asString else null
 }
+
+private fun JsonObject.intOrNull(name: String): Int? = stringOrNull(name)?.toIntOrNull()

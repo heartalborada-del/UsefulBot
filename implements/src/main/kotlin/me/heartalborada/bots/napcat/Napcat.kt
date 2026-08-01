@@ -13,6 +13,7 @@ import kotlinx.coroutines.sync.withLock
 import me.heartalborada.bots.MessageChainTypeAdapter
 import me.heartalborada.commons.ChatType
 import me.heartalborada.commons.bots.AbstractBot
+import me.heartalborada.commons.bots.File as FileMessage
 import me.heartalborada.commons.bots.MessageChain
 import me.heartalborada.commons.bots.dto.ApiCommon
 import me.heartalborada.commons.bots.dto.FileInfo
@@ -56,7 +57,7 @@ class Napcat(
     private val streamAPIExpireSeconds: Long = 30 * 60 * 60 * 24,
     translator: Translator = PropertiesTranslator(),
     autoConnect: Boolean = true,
-) : AbstractBot(commandStartWithAt, commandOperator, commandDivider, translator) {
+) : AbstractBot(commandStartWithAt, commandOperator, commandDivider, translator), NapcatFileClient {
     private val logger: Logger = LoggerFactory.getLogger(this::class.java)
     private val connected = AtomicBoolean(false)
     private val offlinePublished = AtomicBoolean(true)
@@ -66,11 +67,16 @@ class Napcat(
     private val eventBus = EventBus()
     private val mutex = Mutex()
     private val gson = GsonBuilder().registerTypeAdapter(MessageChain::class.java, MessageChainTypeAdapter()).create()
+    private val forwardGson = GsonBuilder()
+        .registerTypeAdapter(MessageChain::class.java, MessageChainTypeAdapter(allowMarkdown = true))
+        .create()
     private val botContext: CoroutineContext by lazy {
         val dispatcher = Executors.newFixedThreadPool(4).asCoroutineDispatcher()
         SupervisorJob() + dispatcher + CoroutineName("NapcatScope")
     }
     private var botID: Long = 0L
+    override val napcatBotId: Long
+        get() = botID
     private val apiScope = CoroutineScope(botContext)
     private val pendingReqs = ConcurrentHashMap<String, CompletableDeferred<String>>()
 
@@ -153,7 +159,8 @@ class Napcat(
                         pendingReqs[uuid] = responseDiffered
                         val sent = apiWS?.send(gson.toJson(ApiCommon(action, uuid, data))) == true
                         if (!sent) throw IllegalStateException("Failed to send message")
-                        val response = withTimeoutOrNull(5000.milliseconds) {
+                        val timeoutMillis = if (message.any { it is FileMessage }) 50_000L else 5_000L
+                        val response = withTimeoutOrNull(timeoutMillis.milliseconds) {
                             responseDiffered.await().also {
                                 pendingReqs.remove(uuid)
                             }
@@ -162,12 +169,10 @@ class Napcat(
                         val root = JsonParser.parseString(response).asJsonObject
                         when (val code = root.getAsJsonPrimitive("retcode").asInt) {
                             0 -> return@withContext root.getAsJsonObject("data").getAsJsonPrimitive("message_id").asLong
-                            else -> throw IllegalReceiveException(
-                                "Invalid response code: $code, message: ${
-                                    root.getAsJsonPrimitive(
-                                        "message"
-                                    ).asString
-                                }"
+                            else -> throw NapcatApiException(
+                                action,
+                                code,
+                                root.getAsJsonPrimitive("message")?.asString.orEmpty(),
                             )
                         }
                     } catch (e: Exception) {
@@ -196,7 +201,7 @@ class Napcat(
                             type = type,
                             target = target,
                             messages = messages,
-                            gson = gson,
+                            gson = forwardGson,
                             defaultUserID = botID.takeIf { it > 0 } ?: INVALID_FORWARD_USER_ID,
                         )
                         val responseDeferred = CompletableDeferred<String>()
@@ -270,6 +275,11 @@ class Napcat(
     }
 
     override fun sendFile(type: ChatType, target: Long, name: String, file: File): Boolean {
+        uploadFile(type, target, name, file)
+        return true
+    }
+
+    override fun uploadFile(type: ChatType, target: Long, name: String, file: File): NapcatFileReceipt {
         if (!file.exists() || !file.isFile) throw IllegalArgumentException("Invalid file.")
         return runBlocking {
             withContext(botContext) {
@@ -335,7 +345,7 @@ class Napcat(
                                 }
                                 val jo = JsonParser.parseString(response).asJsonObject
                                 val rdata = jo.getAsJsonObject("data")
-                                if (rdata.isJsonNull) return@withContext false
+                                check(!rdata.isJsonNull) { "NapCat stream upload returned no data." }
                                 when (val code = jo.getAsJsonPrimitive("retcode").asInt) {
                                     0 -> {
                                         logger.debug(
@@ -396,7 +406,7 @@ class Napcat(
                         }
                         val jo = JsonParser.parseString(response).asJsonObject
                         val rdata = jo.getAsJsonObject("data")
-                        if (rdata.isJsonNull) return@withContext false
+                        check(!rdata.isJsonNull) { "NapCat stream merge returned no data." }
                         if (rdata.getAsJsonPrimitive("status").asString != "file_complete") {
                             throw IllegalStateException("File merge failed.")
                         }
@@ -408,17 +418,13 @@ class Napcat(
                             name,
                         )
                         val path = rdata.getAsJsonPrimitive("file_path").asString
-                        return@withContext sendFile(type, target, name, "file://${path.replace("\\", "/")}")
+                        return@withContext sendFileResource(type, target, name, "file://${path.replace("\\", "/")}")
                     } catch (e: Exception) {
-                        if (e.message != "Timeout") {
-                            return@withContext false
-                        } else {
-                            logger.error("An unexpected error occurred.", e)
-                        }
+                        logger.error("An unexpected error occurred.", e)
                         throw e
                     }
                 } else {
-                    return@withContext sendFile(type, target, name, "base64://${file.toBase64()}")
+                    return@withContext sendFileResource(type, target, name, "base64://${file.toBase64()}")
                 }
             }
 
@@ -426,63 +432,52 @@ class Napcat(
     }
 
     override fun sendFile(type: ChatType, target: Long, name: String, url: String): Boolean {
-        logger.debug("[Send] {} -> [{}] [{}] {}", botID, type.name, target, name)
-        if (url.trim() == "") throw IllegalArgumentException("Invalid url.")
-        return runBlocking {
-            withContext(botContext) {
-                val uuid = UUID.randomUUID().toString()
-                try {
-                    val data = mutableMapOf<String, Any>()
-                    data["file"] = url
-                    data["name"] = name
-                    val action = when (type) {
-                        ChatType.GROUP -> {
-                            data["group_id"] = target
-                            "upload_group_file"
-                        }
+        sendFileResource(type, target, name, url)
+        return true
+    }
 
-                        ChatType.PRIVATE -> {
-                            data["user_id"] = target
-                            "upload_private_file"
-                        }
+    override fun resendFile(type: ChatType, target: Long, name: String, fileId: String): NapcatFileReceipt {
+        require(fileId.isNotBlank()) { "NapCat file ID must not be blank." }
+        return sendFileSegment(type, target, name, fileId, reusableFileId = fileId)
+    }
 
-                        else -> throw IllegalArgumentException("Invalid chat type")
-                    }
-                    val responseDiffered = CompletableDeferred<String>()
-                    pendingReqs[uuid] = responseDiffered
-                    val sent = apiWS?.send(gson.toJson(ApiCommon(action, uuid, data))) == true
-                    if (!sent) throw IllegalStateException("Failed to send file")
-                    val response = withTimeoutOrNull(50000.milliseconds) {
-                        responseDiffered.await().also {
-                            pendingReqs.remove(uuid)
-                        }
-                    }.also { pendingReqs.remove(uuid) }
-                    if (response == null) throw IOException("Timeout")
-                    val root = JsonParser.parseString(response).asJsonObject
-                    val rdata = root.getAsJsonObject("data")
-                    if (rdata.isJsonNull) return@withContext false
-                    when (val code = root.getAsJsonPrimitive("retcode").asInt) {
-                        0 -> return@withContext true
-                        else -> throw IllegalStateException(
-                            "Invalid response code: $code, message: ${
-                                root.getAsJsonPrimitive(
-                                    "message"
-                                ).asString
-                            }"
-                        )
-                    }
-                } catch (e: Exception) {
-                    pendingReqs.remove(uuid)
-                    if (e.message == "Timeout") {
-                        return@withContext false
-                    } else {
-                        logger.error("An unexpected error occurred.", e)
-                    }
-                    throw e
-                }
+    private fun sendFileResource(type: ChatType, target: Long, name: String, resource: String): NapcatFileReceipt {
+        require(resource.isNotBlank()) { "NapCat file resource must not be blank." }
+        return sendFileSegment(type, target, name, resource, reusableFileId = null)
+    }
 
-            }
+    private fun sendFileSegment(
+        type: ChatType,
+        target: Long,
+        name: String,
+        resource: String,
+        reusableFileId: String?,
+    ): NapcatFileReceipt {
+        val message = MessageChain().apply {
+            add(
+                FileMessage(
+                    FileInfo(
+                        name = name,
+                        id = reusableFileId,
+                        url = resource.takeIf { reusableFileId == null },
+                    ),
+                ),
+            )
         }
+        val messageId = sendMessage(type, target, message)
+        val fileId = reusableFileId ?: runCatching { sentFileId(messageId) }
+            .onFailure { logger.warn("NapCat sent file {} but its file ID could not be read.", name, it) }
+            .getOrNull()
+        return NapcatFileReceipt(messageId, fileId)
+    }
+
+    private fun sentFileId(messageId: Long): String? {
+        repeat(3) { attempt ->
+            val data = callOneBotActionData("get_msg", mapOf("message_id" to messageId))
+            extractNapcatFileId(data, gson)?.let { return it }
+            if (attempt < 2) Thread.sleep(100L * (attempt + 1))
+        }
+        return null
     }
 
     private inner class EventListener : WebSocketListener() {
@@ -759,7 +754,12 @@ class Napcat(
         }
     }
 
-    private fun callOneBotAction(action: String, params: Map<String, Any>): Boolean = runBlocking {
+    private fun callOneBotAction(action: String, params: Map<String, Any>): Boolean {
+        callOneBotActionData(action, params)
+        return true
+    }
+
+    private fun callOneBotActionData(action: String, params: Map<String, Any>): JsonObject = runBlocking {
         withContext(botContext) {
             mutex.withLock {
                 val requestID = UUID.randomUUID().toString()
@@ -776,10 +776,13 @@ class Napcat(
                 }
                 val root = JsonParser.parseString(response).asJsonObject
                 val code = root.getAsJsonPrimitive("retcode")?.asInt ?: -1
-                check(code == 0) {
-                    "OneBot action $action failed with code $code: ${root.get("message")?.asString.orEmpty()}"
+                if (code != 0) {
+                    throw NapcatApiException(action, code, root.get("message")?.asString.orEmpty())
                 }
-                true
+                root.get("data")
+                    ?.takeIf { it.isJsonObject }
+                    ?.asJsonObject
+                    ?: JsonObject()
             }
         }
     }
@@ -790,6 +793,16 @@ class Napcat(
             eventBus.publish(BotOfflineEvent(botID, System.currentTimeMillis() / 1_000, expected, reason))
         }
     }
+}
+
+internal fun extractNapcatFileId(messageData: JsonObject, gson: Gson): String? {
+    val message = messageData.get("message") ?: return null
+    if (!message.isJsonArray) return null
+    return gson.fromJson(message, MessageChain::class.java)
+        .filterIsInstance<FileMessage>()
+        .firstOrNull()
+        ?.info
+        ?.id
 }
 
 internal fun buildFriendRequestResponseParams(

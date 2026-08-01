@@ -20,11 +20,17 @@ import me.heartalborada.commons.bots.AbstractMessageObject
 import me.heartalborada.commons.bots.ActionKeyboard
 import me.heartalborada.commons.bots.At
 import me.heartalborada.commons.bots.AtAll
+import me.heartalborada.commons.bots.Contact
+import me.heartalborada.commons.bots.Dice
 import me.heartalborada.commons.bots.File as FileMessage
 import me.heartalborada.commons.bots.Image
+import me.heartalborada.commons.bots.Location
 import me.heartalborada.commons.bots.MessageChain
 import me.heartalborada.commons.bots.PlainText
+import me.heartalborada.commons.bots.Record
 import me.heartalborada.commons.bots.Reply
+import me.heartalborada.commons.bots.Video
+import me.heartalborada.commons.bots.dto.FileInfo
 import me.heartalborada.commons.bots.dto.ForwardMessageNode
 import me.heartalborada.commons.bots.dto.ForwardMessageResult
 import me.heartalborada.commons.bots.dto.InlineQueryResult
@@ -141,7 +147,8 @@ class TelegramBot(
         return when {
             image != null -> sendPhoto(id, image, text, replyTo)
             file != null -> {
-                val url = file.info.url ?: throw IllegalArgumentException("Telegram file message requires a URL.")
+                val url = file.info.url ?: file.info.id
+                    ?: throw IllegalArgumentException("Telegram file message requires a URL or file ID.")
                 sendDocument(id, file.info.name, url, text.takeIf(String::isNotBlank), replyTo)
             }
             else -> sendText(id, text, replyTo, keyboard = keyboard)
@@ -413,15 +420,19 @@ class TelegramBot(
     }
 
     private fun handleMessage(message: JsonObject) {
-        val text = message.get("text")?.asString ?: return
         val from = message.getAsJsonObject("from") ?: return
         if (from.get("is_bot")?.asBoolean == true) return
         val chat = message.getAsJsonObject("chat") ?: return
         val chatID = chat["id"].asLong
         val messageID = message["message_id"].asLong
-        val normalizedText = normalizeTelegramCommand(text, botUsername, commandOperator) ?: return
+        val chain = telegramMessageChain(message)
+        if (chain.isEmpty()) return
+        message.get("text")?.asString?.let { text ->
+            val normalizedText = normalizeTelegramCommand(text, botUsername, commandOperator) ?: return
+            val textIndex = chain.indexOfFirst { it is PlainText }
+            if (textIndex >= 0) chain[textIndex] = PlainText(normalizedText)
+        }
         val sender = from.toUserInfo()
-        val chain = MessageChain.text(normalizedText)
         messageChats[messageID] = chatID
         when (chat["type"].asString) {
             "private" -> eventBus.broadcast(
@@ -804,6 +815,90 @@ internal class TelegramApiException(
         )
     }
 }
+
+internal fun telegramMessageChain(message: JsonObject): MessageChain = MessageChain().apply {
+    message.getAsJsonObject("reply_to_message")
+        ?.get("message_id")
+        ?.asLong
+        ?.let { add(Reply(it)) }
+
+    message.getAsJsonArray("photo")
+        ?.lastOrNull()
+        ?.asJsonObject
+        ?.let { photo ->
+            add(
+                Image(
+                    info = photo.telegramFileInfo("photo.jpg"),
+                    subType = "photo",
+                ),
+            )
+        }
+
+    message.getAsJsonObject("document")?.let { document ->
+        add(FileMessage(document.telegramFileInfo(document.stringOrNull("file_name") ?: "document")))
+    }
+    message.getAsJsonObject("voice")?.let { voice ->
+        add(Record(voice.telegramFileInfo("voice.ogg")))
+    }
+    message.getAsJsonObject("audio")?.let { audio ->
+        add(Record(audio.telegramFileInfo(audio.stringOrNull("file_name") ?: "audio")))
+    }
+    message.getAsJsonObject("video")?.let { video ->
+        add(Video(video.telegramFileInfo(video.stringOrNull("file_name") ?: "video.mp4")))
+    }
+    message.getAsJsonObject("video_note")?.let { video ->
+        add(Video(video.telegramFileInfo("video-note.mp4")))
+    }
+    message.getAsJsonObject("animation")?.let { animation ->
+        add(Video(animation.telegramFileInfo(animation.stringOrNull("file_name") ?: "animation.mp4")))
+    }
+    message.getAsJsonObject("sticker")?.let { sticker ->
+        add(
+            Image(
+                info = sticker.telegramFileInfo("sticker.webp"),
+                summary = sticker.stringOrNull("emoji"),
+                subType = "sticker",
+            ),
+        )
+    }
+
+    val venue = message.getAsJsonObject("venue")
+    val location = venue?.getAsJsonObject("location") ?: message.getAsJsonObject("location")
+    location?.let {
+        add(
+            Location(
+                latitude = it["latitude"].asString,
+                longitude = it["longitude"].asString,
+                title = venue?.stringOrNull("title"),
+                content = venue?.stringOrNull("address"),
+            ),
+        )
+    }
+
+    message.getAsJsonObject("contact")
+        ?.get("user_id")
+        ?.takeUnless { it.isJsonNull }
+        ?.asLong
+        ?.let { add(Contact(Contact.ContactType.TELEGRAM, it)) }
+    message.getAsJsonObject("dice")
+        ?.get("value")
+        ?.asInt
+        ?.let { add(Dice(it)) }
+
+    (message.stringOrNull("text") ?: message.stringOrNull("caption"))
+        ?.let { add(PlainText(it)) }
+}
+
+private fun JsonObject.telegramFileInfo(defaultName: String): FileInfo = FileInfo(
+    name = stringOrNull("file_name") ?: defaultName,
+    size = stringOrNull("file_size")?.toLongOrNull() ?: -1,
+    id = stringOrNull("file_id"),
+    uniqueId = stringOrNull("file_unique_id"),
+)
+
+private fun JsonObject.stringOrNull(name: String): String? = get(name)
+    ?.takeIf { it.isJsonPrimitive }
+    ?.asString
 
 internal fun normalizeTelegramCommand(
     text: String,
